@@ -160,7 +160,7 @@ def test_mock_payment_portal_and_completion(client: TestClient):
     page_resp = client.get(f"/pay/{token}")
     assert page_resp.status_code == 200
     assert "text/html" in page_resp.headers["content-type"]
-    assert "Complete Autopay Recovery" in page_resp.text
+    assert "PayEase Secure Payment" in page_resp.text
 
     # Complete payment
     pay_resp = client.post(f"/pay/{token}/complete")

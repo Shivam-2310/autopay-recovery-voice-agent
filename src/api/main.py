@@ -675,10 +675,10 @@ async def mock_payment_page(token: str) -> str:
 <body>
   <div class="card">
     <div class="badge">⚡ FDE Assignment Demonstration Mock</div>
-    <h1>Complete Autopay Recovery</h1>
-    <p>This is a simulated Razorpay-style payment portal. Click below to simulate an immediate successful recovery.</p>
+    <h1>PayEase Secure Payment</h1>
+    <p>This is a simulated Razorpay-style payment portal. Click below to complete your payment.</p>
     <button class="pay-btn" id="payBtn" onclick="submitPayment()">Pay Now</button>
-    <div class="success-box" id="successBox">✓ Payment Successful! Autopay recovered.</div>
+    <div class="success-box" id="successBox">✓ Payment Successful! Thank you.</div>
   </div>
 
   <script>

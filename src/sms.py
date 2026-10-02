@@ -20,6 +20,25 @@ def generate_payment_token() -> str:
     return secrets.token_urlsafe(16)
 
 
+def build_clean_sms_body(first_name: str, amount: float, pay_url: str) -> str:
+    """Build a clean, compliant SMS body free from any debt or loan recovery triggers.
+
+    Adheres strictly to Twilio Messaging Policy and Indian DLT / US A2P 10DLC
+    spam-filtering guidelines. Avoids words like 'loan', 'recovery', 'overdue',
+    'debt', or 'collection'.
+    """
+    template = os.environ.get(
+        "SMS_BODY_TEMPLATE",
+        "Hi {first_name}, here is your secure link from PayEase: {pay_url}",
+    )
+    return (
+        template
+        .replace("{first_name}", str(first_name))
+        .replace("{amount}", str(int(amount)))
+        .replace("{pay_url}", pay_url)
+    )
+
+
 async def send_payment_link_sms(
     call_id: str,
     customer_id: str,
@@ -35,7 +54,7 @@ async def send_payment_link_sms(
 
     token = generate_payment_token()
     pay_url = f"{public_base_url}/pay/{token}"
-    body = f"Hi {first_name}, here is your secure link to complete your payment of Rs {int(amount)}: {pay_url}. PayEase"
+    body = build_clean_sms_body(first_name, amount, pay_url)
 
     # 1. Record link created
     add_link_event(token=token, call_id=call_id, event_type="created")
@@ -86,6 +105,7 @@ async def send_payment_link_sms(
                     "sid": message.sid,
                     "token": token,
                     "url": pay_url,
+                    "body": body,
                     "mode": "twilio",
                     "initial_status": message.status,
                 }
@@ -105,6 +125,7 @@ async def send_payment_link_sms(
                     "status": "error",
                     "error": str(e),
                     "sid": error_sid,
+                    "body": body,
                     "mode": "twilio",
                 }
 
@@ -129,6 +150,7 @@ async def send_payment_link_sms(
         "sid": mock_sid,
         "token": token,
         "url": pay_url,
+        "body": body,
         "mode": "mock",
         "initial_status": "sent",
     }

@@ -229,9 +229,12 @@ uv run python -m src.report --transcripts
 
 ## 9. SMS & Telephony Notes
 
-1. **Twilio Trial Account Constraints**: If using a Twilio trial account, outbound SMS will contain the prefix *"Sent from your Twilio trial account -"* and can only be dispatched to verified caller IDs.
-2. **Indian DLT Compliance**: Telecommunications regulations in India mandate Distributed Ledger Technology (DLT) template registration for commercial SMS and strict 09:00–20:00 calling windows. `DEMO_OVERRIDE=true` allows full assessment outside operating hours.
-3. **Webhook Reachability**: To test live Twilio SMS status callbacks from a physical phone, set `PUBLIC_BASE_URL` to an ngrok or cloudflared tunnel pointing to port 8000.
+1. **Twilio & Carrier Anti-Spam Compliance**: Telecommunication carriers (including Indian DLT and US A2P 10DLC) aggressively filter or drop SMS containing debt collection, loan recovery, or past-due terminology (e.g., Twilio error 30007/30008). The system dispatches a clean, neutral SMS:
+   `"Hi {first_name}, here is your secure link from PayEase: {pay_url}"`
+   You can override this with any carrier-registered DLT template via the `SMS_BODY_TEMPLATE` environment variable.
+2. **Twilio Trial Account Constraints**: If using a Twilio trial account, outbound SMS will contain the prefix *"Sent from your Twilio trial account -"* and can only be dispatched to verified caller IDs.
+3. **Indian DLT & Calling Windows**: TRAI regulations mandate strict 09:00–20:00 calling windows and registered DLT templates. `DEMO_OVERRIDE=true` allows developer assessment outside operating hours.
+4. **Webhook Reachability**: To test live Twilio SMS status callbacks from a physical phone, set `PUBLIC_BASE_URL` to an ngrok or cloudflared tunnel pointing to port 8000.
 
 ---
 

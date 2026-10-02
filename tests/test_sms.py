@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from src.api.main import app
 from src.db import create_call_record, get_call_details, get_conn, init_db
-from src.sms import generate_payment_token, send_payment_link_sms
+from src.sms import build_clean_sms_body, generate_payment_token, send_payment_link_sms
 
 
 @pytest.fixture(autouse=True)
@@ -17,6 +17,7 @@ def setup_env():
     os.environ["DEMO_PHONE"] = "+919876543210"
     os.environ["DEMO_OVERRIDE"] = "true"
     os.environ["SMS_MODE"] = "mock"
+    os.environ.pop("SMS_BODY_TEMPLATE", None)
     init_db()
 
 
@@ -26,6 +27,32 @@ async def test_generate_payment_token():
     t2 = generate_payment_token()
     assert len(t1) >= 16
     assert t1 != t2
+
+
+@pytest.mark.anyio
+async def test_clean_sms_body_compliance():
+    """Verify that SMS body contains zero prohibited debt, loan, recovery, or overdue terms."""
+    body = build_clean_sms_body(first_name="Aarav", amount=2499.0, pay_url="http://localhost:8000/pay/xyz")
+    lower = body.lower()
+    
+    # Twilio/Carrier compliance check: must not contain collection/loan triggers
+    assert "loan" not in lower
+    assert "recovery" not in lower
+    assert "debt" not in lower
+    assert "overdue" not in lower
+    assert "collection" not in lower
+    
+    assert "Aarav" in body
+    assert "http://localhost:8000/pay/xyz" in body
+
+
+@pytest.mark.anyio
+async def test_clean_sms_body_custom_template():
+    """Verify that SMS_BODY_TEMPLATE overrides clean default."""
+    os.environ["SMS_BODY_TEMPLATE"] = "PayEase Link for {first_name}: {pay_url}"
+    body = build_clean_sms_body(first_name="Priya", amount=1299.0, pay_url="http://localhost:8000/pay/abc")
+    assert body == "PayEase Link for Priya: http://localhost:8000/pay/abc"
+    os.environ.pop("SMS_BODY_TEMPLATE", None)
 
 
 @pytest.mark.anyio
@@ -44,6 +71,9 @@ async def test_send_payment_link_sms_mock_lifecycle():
     assert res["mode"] == "mock"
     assert "token" in res
     assert "/pay/" in res["url"]
+    assert "body" in res
+    assert "recovery" not in res["body"].lower()
+    assert "loan" not in res["body"].lower()
 
     # Verify link events in DB
     token = res["token"]
