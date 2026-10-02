@@ -1,0 +1,22 @@
+[project]
+name = "voice-agent"
+version = "0.1.0"
+description = "Voice agent that recovers failed autopay payments via outbound calls"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "livekit-agents>=1.0",
+    "livekit-api>=1.0",
+    "livekit-plugins-deepgram>=1.0",
+    "livekit-plugins-elevenlabs>=1.0",
+    "livekit-plugins-langchain>=1.0",
+    "livekit-plugins-silero>=1.0",
+    "langgraph>=0.4",
+    "langchain-openai>=0.3",
+    "langchain-google-genai>=2.0",
+    "pydantic>=2.0",
+    "python-dotenv>=1.0",
+]
+
+[dependency-groups]
+dev = []
