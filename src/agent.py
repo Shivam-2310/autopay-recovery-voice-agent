@@ -1,7 +1,8 @@
 """LiveKit agent worker for autopay recovery calls.
 
-Wires together: Deepgram STT → LangGraph brain (via LLMAdapter) → ElevenLabs TTS.
-Registers as agent_name="autopay-recovery" for explicit dispatch from dial.py.
+Wires together: Deepgram STT (tuned endpointing) → LangGraph brain (via LLMAdapter)
+→ TTS Spoken Sanitizer → ElevenLabs TTS.
+Registers as agent_name="autopay-recovery" for explicit dispatch from dial.py / API.
 """
 
 from __future__ import annotations
@@ -23,22 +24,33 @@ from livekit.agents import Agent, AgentSession, JobContext
 from livekit.plugins import deepgram, elevenlabs, silero
 from livekit.plugins import langchain as lk_langchain
 
-from src.db import get_conn, get_outcomes, save_outcome
+from src.db import get_conn, get_outcomes, save_outcome, set_customer_dnd
 from src.graph import build_graph
+from src.guardrails import (
+    check_duration_limit,
+    detect_card_or_credentials,
+    detect_dispute_or_escalation,
+    detect_do_not_call,
+    detect_prompt_injection,
+    detect_wrong_party,
+    redact_pii_for_transcript,
+    shield_unverified_output,
+)
 from src.llm import get_llm_with_fallbacks
 from src.models import Outcome
 from src.prompts import build_system_prompt
-from src.tools import ALL_TOOLS
+from src.sanitizer import tts_sanitizer_transform
+from src.tools import CallState, make_tools
 
 load_dotenv()
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("agent")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 
 
 def prewarm(proc: agents.JobProcess) -> None:
-    """Pre-load heavyweight models into the warm worker process before any calls arrive."""
-    logger.info("Pre-warming Silero VAD and tokenizers in worker process...")
+    """Pre-load heavyweight models into the warm worker process before calls arrive."""
+    logger.info("Pre-warming Silero VAD in worker process...")
     proc.userdata["vad"] = silero.VAD.load()
     try:
         import tiktoken
@@ -48,24 +60,39 @@ def prewarm(proc: agents.JobProcess) -> None:
     logger.info("Worker pre-warmed successfully.")
 
 
-def _build_session(customer: dict, vad: Any | None = None) -> tuple[AgentSession, Agent]:
+def _build_session(
+    customer: dict,
+    state: CallState,
+    emit_fn: Any = None,
+    vad: Any | None = None,
+) -> tuple[AgentSession, Agent]:
     """Construct an AgentSession and Agent for a single call."""
     llm = get_llm_with_fallbacks()
-    graph = build_graph(llm=llm, tools=ALL_TOOLS)
+    tools = make_tools(state, emit_event_fn=emit_fn)
+    graph = build_graph(llm=llm, tools=tools)
 
+    # 1. ElevenLabs configuration strictly from env
     eleven_key = os.environ.get("ELEVEN_API_KEY") or os.environ.get("ELEVENLABS_API_KEY")
-    dg_model = os.environ.get("DEEPGRAM_MODEL", "nova-3")
-    eleven_model = os.environ.get("ELEVENLABS_MODEL", "eleven_turbo_v2_5")
-    eleven_voice = os.environ.get("ELEVENLABS_VOICE_ID", "TX3LPaxmHKxFdv7VOQHJ")
+    eleven_model = os.environ.get("ELEVEN_MODEL") or os.environ.get("ELEVENLABS_MODEL", "eleven_turbo_v2_5")
+    eleven_voice = os.environ.get("ELEVEN_VOICE_ID") or os.environ.get("ELEVENLABS_VOICE_ID", "TX3LPaxmHKxFdv7VOQHJ")
     eleven_encoding = os.environ.get("ELEVENLABS_ENCODING", "pcm_24000")
-    stability = float(os.environ.get("ELEVENLABS_STABILITY", "0.75"))
-    similarity = float(os.environ.get("ELEVENLABS_SIMILARITY", "0.85"))
+    stability = float(os.environ.get("ELEVEN_STABILITY") or os.environ.get("ELEVENLABS_STABILITY", "0.50"))
+    similarity = float(os.environ.get("ELEVEN_SIMILARITY") or os.environ.get("ELEVENLABS_SIMILARITY", "0.75"))
+    style = float(os.environ.get("ELEVEN_STYLE", "0.0"))
+    speed = float(os.environ.get("ELEVEN_SPEED", "1.0"))
+
+    # 2. Deepgram STT with tuned endpointing for phone turn-taking (350ms default)
+    dg_model = os.environ.get("DEEPGRAM_MODEL", "nova-3")
+    dg_endpointing = int(os.environ.get("DEEPGRAM_ENDPOINTING_MS", "350"))
 
     if vad is None:
         vad = silero.VAD.load()
 
     session = AgentSession(
-        stt=deepgram.STT(model=dg_model),
+        stt=deepgram.STT(
+            model=dg_model,
+            endpointing_ms=dg_endpointing,
+        ),
         llm=lk_langchain.LLMAdapter(graph=graph),
         tts=elevenlabs.TTS(
             model=eleven_model,
@@ -74,9 +101,13 @@ def _build_session(customer: dict, vad: Any | None = None) -> tuple[AgentSession
             voice_settings=elevenlabs.VoiceSettings(
                 stability=stability,
                 similarity_boost=similarity,
+                style=style,
+                speed=speed,
+                use_speaker_boost=True,
             ),
             api_key=eleven_key,
         ),
+        tts_text_transforms=[tts_sanitizer_transform],
         vad=vad,
     )
 
@@ -87,13 +118,10 @@ def _build_session(customer: dict, vad: Any | None = None) -> tuple[AgentSession
 
 
 async def entrypoint(ctx: JobContext) -> None:
-    """Handle a single outbound call job.
-
-    The customer record is passed via job metadata or room metadata (JSON) by dial.py.
-    """
+    """Handle a single outbound call job."""
     await ctx.connect()
 
-    # Extract customer context from job metadata, room metadata, or fallback to customers.json
+    # Extract customer context from metadata = {"customer_id": cid}
     raw_metadata = ctx.job.metadata or ctx.room.metadata or ""
     metadata_dict: dict = {}
     if raw_metadata:
@@ -114,42 +142,39 @@ async def entrypoint(ctx: JobContext) -> None:
                 for c in all_customers:
                     if c.get("id") == cid:
                         customer = c
-                        logger.info("Resolved customer %s from customers.json", cid)
                         break
             if not customer:
                 room_name = ctx.room.name or ""
                 for c in all_customers:
                     if c.get("id") and c["id"] in room_name:
                         customer = c
-                        logger.info("Resolved customer %s from room name match", c["id"])
                         break
         except Exception as e:
             logger.error("Failed to load customers.json: %s", e)
 
-    # Fallback to direct metadata dict if it already contained full record
     if not customer and metadata_dict.get("name"):
         customer = metadata_dict
 
     if not customer.get("id"):
-        logger.error(
-            "No customer data available for job %s, room %s (raw metadata: %r)",
-            ctx.job.id,
-            ctx.room.name,
-            raw_metadata,
-        )
+        logger.error("No customer data available for job %s, room %s", ctx.job.id, ctx.room.name)
         return
 
-    logger.info(
-        "Starting recovery call workflow: customer=%s name=%s",
-        customer["id"],
-        customer.get("name", "unknown"),
+    logger.info("Initializing call session for customer: %s (%s)", customer["id"], customer.get("name", "Unknown"))
+
+    call_state = CallState(
+        customer_id=customer["id"],
+        customer_record=customer,
+        call_id=ctx.room.name or f"call-{customer['id']}",
     )
 
-    # Pre-build session, LLM, graph, and VAD immediately while the phone is ringing
+    def _on_event(event_type: str, payload: dict) -> None:
+        logger.info("Agent Event [%s]: %s", event_type, payload)
+
     vad = ctx.proc.userdata.get("vad")
-    session, agent = _build_session(customer, vad=vad)
+    session, agent = _build_session(customer, call_state, emit_fn=_on_event, vad=vad)
 
     transcript_lines: list[str] = []
+    call_start_time = asyncio.get_event_loop().time()
 
     @session.on("conversation_item_added")
     def on_item_added(ev: Any) -> None:
@@ -158,14 +183,36 @@ async def entrypoint(ctx: JobContext) -> None:
         if isinstance(text, list):
             text = " ".join(str(t) for t in text)
         if text:
-            logger.info("Transcript [%s]: %s", role, text)
-            transcript_lines.append(f"{role}: {text}")
+            # Redact PII in memory
+            redacted = redact_pii_for_transcript(text, birth_year=customer.get("birth_year"))
+            transcript_lines.append(f"{role}: {redacted}")
 
     @session.on("user_speech_committed")
     def on_user_speech(ev: Any) -> None:
         text = getattr(ev, "text", "") or getattr(ev, "content", "")
-        if text:
-            logger.info(">>> Customer spoke: %s", text)
+        if not text:
+            return
+        logger.info(">>> Customer spoke: %s", text)
+
+        # Check guardrails on user input
+        if detect_do_not_call(text):
+            call_state.do_not_call = True
+            set_customer_dnd(customer["id"])
+            logger.warning("Guardrail 6 (DND) triggered: customer requested Do Not Call")
+
+        has_creds, cred_type = detect_card_or_credentials(text)
+        if has_creds:
+            logger.warning("Guardrail 4 (Credentials Blocker) triggered: %s", cred_type)
+
+        is_dispute, dispute_reason = detect_dispute_or_escalation(text)
+        if is_dispute:
+            logger.info("Guardrail 5 (Dispute/Escalate) triggered: %s", dispute_reason)
+
+        if detect_wrong_party(text):
+            logger.info("Guardrail 3 (Wrong Party) triggered")
+
+        if detect_prompt_injection(text):
+            logger.warning("Guardrail 8 (Prompt Injection) blocked adversarial input")
 
     @session.on("agent_speech_committed")
     def on_agent_speech(ev: Any) -> None:
@@ -173,76 +220,66 @@ async def entrypoint(ctx: JobContext) -> None:
         if text:
             logger.info("<<< Agent spoke: %s", text)
 
+        # If terminal outcome was reached, schedule clean room disconnect after speaking
+        if call_state.is_terminal():
+            logger.info("Terminal outcome reached (%s). Closing room in 3s...", call_state.terminal_outcome)
+            asyncio.create_task(_delayed_disconnect(ctx, delay=3.0))
+
+    async def _delayed_disconnect(job_ctx: JobContext, delay: float = 3.0) -> None:
+        await asyncio.sleep(delay)
+        try:
+            await job_ctx.room.disconnect()
+        except Exception:
+            pass
+
     @session.on("close")
     def on_close(ev: Any) -> None:
-        logger.info("Session closed: reason=%s", getattr(ev, "reason", "unknown"))
-        existing = get_outcomes(customer["id"])
+        logger.info("Call session closed: reason=%s", getattr(ev, "reason", "unknown"))
+        duration = asyncio.get_event_loop().time() - call_start_time
         full_transcript = "\n".join(transcript_lines)
-        if not existing:
-            save_outcome(
-                Outcome(
-                    customer_id=customer["id"],
-                    disposition="refused",
-                    notes="Call ended before completion",
-                    transcript=full_transcript,
-                )
-            )
-        elif full_transcript:
-            try:
-                with get_conn() as conn:
-                    conn.execute(
-                        "UPDATE outcomes SET transcript = ? WHERE id = ?",
-                        (full_transcript, existing[0]["id"]),
-                    )
-            except Exception as e:
-                logger.warning("Failed to save transcript: %s", e)
 
-    # Wait for the customer to answer the ringing phone
-    logger.info("Waiting for customer to answer the phone...")
-    try:
-        participant = await asyncio.wait_for(ctx.wait_for_participant(), timeout=45.0)
-        logger.info(
-            "Customer answered! Participant connected: %s (kind=%s)",
-            participant.identity,
-            participant.kind,
-        )
-    except TimeoutError:
-        logger.warning("Call timed out waiting for customer to answer (45s)")
+        final_outcome = call_state.terminal_outcome or "declined"
+        note = call_state.outcome_note or "Call ended before terminal resolution"
+
         save_outcome(
             Outcome(
                 customer_id=customer["id"],
-                disposition="no_answer",
-                notes="No answer after 45s ringing",
+                disposition=final_outcome,
+                notes=note,
+                transcript=full_transcript,
+                duration_sec=round(duration, 2),
             )
+        )
+
+    # Wait for phone to be answered
+    logger.info("Waiting for customer to answer the phone (45s timeout)...")
+    try:
+        participant = await asyncio.wait_for(ctx.wait_for_participant(), timeout=45.0)
+        logger.info("Customer answered: %s (kind=%s)", participant.identity, participant.kind)
+    except TimeoutError:
+        logger.warning("Call timed out waiting for customer to answer")
+        save_outcome(
+            Outcome(customer_id=customer["id"], disposition="no_answer", notes="No answer after 45s ringing")
         )
         return
     except Exception as e:
         logger.warning("Call disconnected before answer: %s", e)
         save_outcome(
-            Outcome(
-                customer_id=customer["id"],
-                disposition="no_answer",
-                notes=f"Call disconnected before answer: {e}",
-            )
+            Outcome(customer_id=customer["id"], disposition="no_answer", notes=f"Disconnected before answer: {e}")
         )
         return
 
     # Start audio session with the answering participant
-    await session.start(
-        agent=agent,
-        room=ctx.room,
-    )
-
-    # Short pause to let cellular audio pipeline calibrate
+    await session.start(agent=agent, room=ctx.room)
     await asyncio.sleep(0.5)
 
-    # Greet proactively with allow_interruptions=False so line noise doesn't swallow greeting
+    # First turn greeting with mandatory AI & recording disclosure
     company_name = os.environ.get("COMPANY_NAME", "PayEase")
     greeting = (
-        f"Hello, this is an AI assistant calling from {company_name}. "
+        f"Hello, this is Aanya, an automated AI assistant calling from {company_name} on a recorded line. "
         f"Am I speaking with {customer.get('name', 'the account holder')}?"
     )
-    logger.info("Speaking greeting: %s", greeting)
+    logger.info("Speaking first turn greeting: %s", greeting)
     await session.say(greeting, allow_interruptions=False)
 
 
