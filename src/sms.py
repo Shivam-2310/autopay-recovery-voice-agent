@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from src.db import add_link_event, add_message, mask_phone_number, update_message_status
+from src.dial import validate_demo_phone
 
 logger = logging.getLogger("sms")
 
@@ -26,7 +27,8 @@ async def send_payment_link_sms(
     amount: float,
 ) -> dict[str, Any]:
     """Send payment link via Twilio SMS to DEMO_PHONE (or simulate if mock mode)."""
-    demo_phone = os.environ.get("DEMO_PHONE", "+919876543210")
+    raw_demo = os.environ.get("DEMO_PHONE", "+919876543210")
+    demo_phone = validate_demo_phone(raw_demo)
     masked_to = mask_phone_number(demo_phone)
     sms_mode = os.environ.get("SMS_MODE", "mock").lower()
     public_base_url = os.environ.get("PUBLIC_BASE_URL", "http://localhost:8000").rstrip("/")

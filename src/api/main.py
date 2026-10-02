@@ -584,8 +584,21 @@ async def dispatch_worker_sms(
 
 # ── Mock Razorpay Payment Page & Completion ──────────────────────────────────
 @app.get("/pay/{token}", response_class=HTMLResponse)
-def mock_payment_page(token: str) -> str:
+async def mock_payment_page(token: str) -> str:
     """Razorpay-styled mock payment page."""
+    with get_conn() as conn:
+        row = conn.execute("SELECT call_id FROM link_events WHERE token = ? LIMIT 1", (token,)).fetchone()
+        call_id = row["call_id"] if row else "unknown"
+
+    add_link_event(token=token, call_id=call_id, event_type="clicked")
+    await ws_manager.broadcast({
+        "type": "link.event",
+        "token": token,
+        "call_id": call_id,
+        "event": "clicked",
+        "timestamp": datetime.now(UTC).isoformat(),
+    })
+
     html_content = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -706,7 +719,7 @@ async def complete_mock_payment(token: str) -> dict[str, str]:
     add_link_event(token=token, call_id=call_id, event_type="paid")
 
     if call_id != "unknown":
-        update_call_record(call_id=call_id, outcome="recovered", note="Payment recovered via payment link")
+        update_call_record(call_id=call_id, outcome="recovered", note="recovered via link")
 
     await ws_manager.broadcast({
         "type": "link.event",
