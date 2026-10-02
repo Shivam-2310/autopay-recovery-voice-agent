@@ -7,10 +7,19 @@ wheels/
 *.egg-info
 
 # Virtual environments
-.venv
+.venv/
 
 # Secrets
 .env
 
-# Runtime data
-outcomes.db
+# Runtime data & databases
+*.db
+*.db-wal
+*.db-shm
+
+# Planning, logs, and artifacts
+plan.md
+logs/
+recordings/
+node_modules/
+uv.lock

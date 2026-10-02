@@ -95,28 +95,40 @@ async def entrypoint(ctx: JobContext) -> None:
 
     # Extract customer context from job metadata, room metadata, or fallback to customers.json
     raw_metadata = ctx.job.metadata or ctx.room.metadata or ""
-    customer: dict = {}
+    metadata_dict: dict = {}
     if raw_metadata:
         try:
-            customer = json.loads(raw_metadata)
+            metadata_dict = json.loads(raw_metadata)
         except json.JSONDecodeError:
             logger.warning("Could not parse JSON from metadata: %s", raw_metadata)
 
-    if not customer.get("id"):
-        room_name = ctx.room.name or ""
-        logger.info("Attempting customer resolution from room name: %s", room_name)
-        customers_file = Path(__file__).resolve().parent.parent / "customers.json"
-        if customers_file.exists():
-            try:
-                with open(customers_file) as f:
-                    all_customers = json.load(f)
+    cid = metadata_dict.get("customer_id") or metadata_dict.get("id")
+    customer: dict = {}
+
+    customers_file = Path(__file__).resolve().parent.parent / "customers.json"
+    if customers_file.exists():
+        try:
+            with open(customers_file) as f:
+                all_customers = json.load(f)
+            if cid:
+                for c in all_customers:
+                    if c.get("id") == cid:
+                        customer = c
+                        logger.info("Resolved customer %s from customers.json", cid)
+                        break
+            if not customer:
+                room_name = ctx.room.name or ""
                 for c in all_customers:
                     if c.get("id") and c["id"] in room_name:
                         customer = c
-                        logger.info("Resolved customer %s from customers.json", c["id"])
+                        logger.info("Resolved customer %s from room name match", c["id"])
                         break
-            except Exception as e:
-                logger.error("Failed to load customers.json fallback: %s", e)
+        except Exception as e:
+            logger.error("Failed to load customers.json: %s", e)
+
+    # Fallback to direct metadata dict if it already contained full record
+    if not customer and metadata_dict.get("name"):
+        customer = metadata_dict
 
     if not customer.get("id"):
         logger.error(

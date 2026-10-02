@@ -11,10 +11,9 @@ from pydantic import BaseModel, Field
 
 class FailureReason(StrEnum):
     INSUFFICIENT_FUNDS = "insufficient_funds"
-    EXPIRED_CARD = "expired_card"
-    BANK_DECLINED = "bank_declined"
-    ACCOUNT_CLOSED = "account_closed"
-    LIMIT_EXCEEDED = "limit_exceeded"
+    BANK_TIMEOUT = "bank_timeout"
+    MANDATE_EXPIRED = "mandate_expired"
+    BANK_DECLINE = "bank_decline"
 
 
 class Customer(BaseModel):
@@ -22,7 +21,7 @@ class Customer(BaseModel):
 
     id: str
     name: str
-    phone: str = Field(description="E.164 phone number")
+    phone: str = Field(description="Fictional customer phone number")
     mandate_id: str = Field(description="Autopay mandate reference")
     amount_due: float
     currency: str = "INR"
@@ -30,15 +29,19 @@ class Customer(BaseModel):
     failure_reason: FailureReason
     bank_name: str
     last_4_digits: str = Field(description="Last 4 digits of card/account")
+    birth_year: int = Field(description="Year of birth for identity verification")
+    do_not_call: bool = Field(default=False, description="Whether customer requested no further calls")
 
 
 Disposition = Literal[
-    "payment_link_sent",
-    "callback_requested",
-    "refused",
-    "voicemail",
+    "recovered",
+    "link_sent",
+    "scheduled",
+    "escalate",
+    "declined",
+    "verification_failed",
+    "wrong_party",
     "no_answer",
-    "error",
 ]
 
 
