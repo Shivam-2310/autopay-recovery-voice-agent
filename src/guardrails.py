@@ -201,9 +201,9 @@ def check_duration_limit(elapsed_sec: float) -> tuple[bool, bool]:
     return False, False
 
 
-# ── 11. PII Redaction in Transcripts & Logs ───────────────────────────────────
 _PHONE_RE = re.compile(r"(?:\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}")
 _DIGIT_STRING_RE = re.compile(r"\b\d{4}\b")  # Potential birth year or 4-digit PIN
+_CVV_PIN_RE = re.compile(r"\b(?:cvv|cvc|pin|security code|code)\s*(?:is|:)?\s*(\d{3,6})\b", re.IGNORECASE)
 
 
 def redact_pii_for_transcript(text: str, birth_year: int | None = None) -> str:
@@ -223,7 +223,8 @@ def redact_pii_for_transcript(text: str, birth_year: int | None = None) -> str:
 
     redacted = _PHONE_RE.sub(_mask_match, redacted)
 
-    # Redact card PANs
+    # Redact card PANs and security codes/CVVs
     redacted = _CARD_PAN_RE.sub("[CARD NUMBER REDACTED]", redacted)
+    redacted = _CVV_PIN_RE.sub("[CREDENTIALS REDACTED]", redacted)
 
     return redacted
