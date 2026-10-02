@@ -1,10 +1,20 @@
-"""Outcomes and recovery reporting CLI for the autopay recovery agent.
+"""Outcomes and recovery reporting CLI for the autopay recovery voice agent.
+
+Queries the multi-table schema (`calls`, `customers_state`, `link_events`, `messages`)
+and generates executive summary metrics and per-customer recovery logs.
+
+Features:
+- CLI formatted table, JSON, and CSV exports
+- Detailed metrics: recovery via retry vs link, escalations, callbacks, refusal breakdown
+- Strict privacy redaction: phone numbers masked (+91XXXXXX1234), birth year omitted everywhere
+- Distinguishes live telephony vs simulated persona calls
 
 Usage:
     python -m src.report
     python -m src.report --customer CUST-001
     python -m src.report --format json
     python -m src.report --format csv
+    python -m src.report --transcripts
 """
 
 from __future__ import annotations
@@ -18,92 +28,82 @@ from pathlib import Path
 # Ensure project root is on sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.db import get_outcomes
-
-CUSTOMERS_FILE = Path(__file__).resolve().parent.parent / "customers.json"
+from src.db import get_calls, get_metrics, init_db
 
 
-def load_customers_map() -> dict[str, dict]:
-    if not CUSTOMERS_FILE.exists():
-        return {}
-    with open(CUSTOMERS_FILE) as f:
-        data = json.load(f)
-    return {c["id"]: c for c in data if "id" in c}
-
-
-def generate_report(customer_id: str | None = None) -> list[dict]:
-    outcomes = get_outcomes(customer_id=customer_id)
-    customers_map = load_customers_map()
+def generate_report(customer_id: str | None = None, limit: int = 200) -> list[dict]:
+    """Retrieve and format call records from the multi-table schema."""
+    init_db()
+    calls = get_calls(limit=limit, customer_id=customer_id)
 
     enriched = []
-    for o in outcomes:
-        cid = o["customer_id"]
-        cinfo = customers_map.get(cid, {})
-        enriched.append(
-            {
-                "call_id": o["id"],
-                "customer_id": cid,
-                "name": cinfo.get("name", "Unknown"),
-                "phone": cinfo.get("phone", "N/A"),
-                "bank": cinfo.get("bank_name", "N/A"),
-                "amount_due": cinfo.get("amount_due", 0.0),
-                "disposition": o["disposition"],
-                "notes": o.get("notes", ""),
-                "transcript": o.get("transcript", ""),
-                "timestamp": o.get("timestamp", ""),
-            }
-        )
+    for c in calls:
+        # Strictly ensure birth_year is NOT present
+        record = {
+            "call_id": c["id"],
+            "customer_id": c["customer_id"],
+            "name": c.get("customer_name") or "Unknown",
+            "phone_masked": c.get("phone_masked") or "+91XXXXXX1234",
+            "bank": c.get("bank_name") or "N/A",
+            "amount_due": float(c.get("amount_due") or 0.0),
+            "source": c.get("source") or "live",
+            "status": c.get("status") or "completed",
+            "outcome": c.get("outcome") or "pending",
+            "duration_sec": float(c.get("duration_sec") or 0.0),
+            "note": c.get("note") or "",
+            "started_at": c.get("started_at") or "",
+            "transcript": c.get("transcript") or "",
+        }
+        enriched.append(record)
+
     return enriched
 
 
 def print_table(records: list[dict]) -> None:
+    """Print executive terminal summary and formatted call log table."""
+    metrics = get_metrics()
+
+    print("\n" + "=" * 115)
+    print(f"{'AUTOPAY RECOVERY SYSTEM — EXECUTIVE METRICS & AUDIT REPORT':^115}")
+    print("=" * 115)
+
+    print(f"  • Total Recovery Calls:      {metrics['total_calls']}")
+    print(f"  • Total Recovered:           {metrics['total_recovered']} (Recovery Rate: {metrics['recovery_rate']}%)")
+    print(f"    └─ Direct Bank Retries:    {metrics['recovered_count']}")
+    print(f"    └─ Link Settlements (Paid):{metrics['paid_links_count']}")
+    print(f"  • SMS Payment Links Sent:    {metrics['link_sent_count']}")
+    print(f"  • Callbacks Scheduled:       {metrics['scheduled_count']}")
+    print(f"  • Escalated to Specialist:   {metrics['escalated_count']}")
+    print(f"  • Explicitly Declined:       {metrics['declined_count']}")
+    print(f"  • Average Call Duration:     {metrics['average_duration_sec']}s")
+    print("-" * 115)
+
     if not records:
-        print("\nNo recovery call outcomes found in outcomes.db.\n")
+        print(f"{'No call logs recorded yet in outcomes.db.':^115}\n")
         return
 
-    print("\n" + "=" * 105)
-    print(f"{'AUTOPAY RECOVERY CALL OUTCOMES REPORT':^105}")
-    print("=" * 105)
     header = (
-        f"{'ID':<4} | {'Cust ID':<9} | {'Customer Name':<16} | {'Bank':<14} | "
-        f"{'Amount':<10} | {'Disposition':<19} | {'Notes'}"
+        f"{'Call ID':<18} | {'Cust ID':<9} | {'Customer Name':<16} | {'Bank':<10} | "
+        f"{'Amount':<9} | {'Src':<4} | {'Outcome':<18} | {'Note'}"
     )
     print(header)
-    print("-" * 105)
-
-    total_amount = 0.0
-    recovered_amount = 0.0
-    stats: dict[str, int] = {}
+    print("-" * 115)
 
     for r in records:
+        cid_display = r["call_id"][:17]
+        name_display = r["name"][:15]
+        bank_display = r["bank"][:9]
         amt = r["amount_due"]
-        total_amount += amt
-        disp = r["disposition"]
-        stats[disp] = stats.get(disp, 0) + 1
-        if disp == "payment_link_sent":
-            recovered_amount += amt
+        src = "SIM" if r["source"] == "simulated" else "LIVE"
+        outcome_disp = r["outcome"]
+        note_disp = r["note"][:22] + ("..." if len(r["note"]) > 22 else "")
 
-        notes_truncated = r["notes"][:28] + ("..." if len(r["notes"]) > 28 else "")
         print(
-            f"{r['call_id']:<4} | {r['customer_id']:<9} | {r['name']:<16} | {r['bank']:<14} | "
-            f"₹{amt:<9,.0f} | {disp:<19} | {notes_truncated}"
+            f"{cid_display:<18} | {r['customer_id']:<9} | {name_display:<16} | {bank_display:<10} | "
+            f"₹{amt:<8,.0f} | {src:<4} | {outcome_disp:<18} | {note_disp}"
         )
 
-    print("=" * 105)
-
-    # Executive Summary
-    total_calls = len(records)
-    print("\n📊 EXECUTIVE SUMMARY:")
-    print(f"  • Total Call Records:     {total_calls}")
-    print(f"  • Payment Links Sent:     {stats.get('payment_link_sent', 0)} (₹{recovered_amount:,.2f})")
-    print(f"  • Callbacks Scheduled:    {stats.get('callback_requested', 0)}")
-    print(f"  • Explicit Refusals:      {stats.get('refused', 0)}")
-    print(f"  • Voicemail / No Answer:  {stats.get('voicemail', 0) + stats.get('no_answer', 0)}")
-    print(f"  • Errors / Incomplete:    {stats.get('error', 0)}")
-
-    if total_calls > 0:
-        rec_rate = (stats.get("payment_link_sent", 0) / total_calls) * 100
-        print(f"  • Link Delivery Rate:     {rec_rate:.1f}%\n")
+    print("=" * 115 + "\n")
 
 
 def main() -> None:
@@ -125,21 +125,25 @@ def main() -> None:
     records = generate_report(customer_id=args.customer)
 
     if args.format == "json":
-        print(json.dumps(records, indent=2))
+        # Ensure birth_year is nowhere in output
+        clean_records = [{k: v for k, v in r.items() if k != "birth_year"} for r in records]
+        print(json.dumps(clean_records, indent=2))
     elif args.format == "csv":
         if not records:
             return
-        writer = csv.DictWriter(sys.stdout, fieldnames=list(records[0].keys()))
+        fieldnames = [k for k in records[0].keys() if k not in ("birth_year", "transcript")]
+        writer = csv.DictWriter(sys.stdout, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
-        writer.writerows(records)
+        for r in records:
+            writer.writerow({k: r[k] for k in fieldnames})
     else:
         print_table(records)
         if args.transcripts:
             for r in records:
                 if r.get("transcript"):
-                    print(f"\n--- TRANSCRIPT: Call #{r['call_id']} ({r['customer_id']} - {r['name']}) ---")
+                    print(f"\n--- TRANSCRIPT: Call {r['call_id']} ({r['customer_id']} - {r['name']}) ---")
                     print(r["transcript"])
-                    print("-" * 60)
+                    print("-" * 70)
 
 
 if __name__ == "__main__":

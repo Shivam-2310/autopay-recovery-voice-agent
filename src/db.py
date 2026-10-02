@@ -373,19 +373,32 @@ def add_link_event(token: str, call_id: str, event_type: str, db_path: Path = DB
         return cur.lastrowid  # type: ignore[return-value]
 
 
-def get_calls(limit: int = 50, db_path: Path = DB_PATH) -> list[dict[str, Any]]:
-    """Return recent call records enriched with customer name."""
+def get_calls(limit: int = 50, customer_id: str | None = None, db_path: Path = DB_PATH) -> list[dict[str, Any]]:
+    """Return recent call records enriched with customer state."""
     with get_conn(db_path) as conn:
-        rows = conn.execute(
-            """
-            SELECT c.*, cs.name as customer_name, cs.amount_due, cs.failure_reason
-            FROM calls c
-            LEFT JOIN customers_state cs ON c.customer_id = cs.id
-            ORDER BY c.started_at DESC
-            LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
+        if customer_id:
+            rows = conn.execute(
+                """
+                SELECT c.*, cs.name as customer_name, cs.phone_masked, cs.bank_name, cs.amount_due, cs.failure_reason
+                FROM calls c
+                LEFT JOIN customers_state cs ON c.customer_id = cs.id
+                WHERE c.customer_id = ?
+                ORDER BY c.started_at DESC
+                LIMIT ?
+                """,
+                (customer_id, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT c.*, cs.name as customer_name, cs.phone_masked, cs.bank_name, cs.amount_due, cs.failure_reason
+                FROM calls c
+                LEFT JOIN customers_state cs ON c.customer_id = cs.id
+                ORDER BY c.started_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
         return [dict(r) for r in rows]
 
 
@@ -447,16 +460,24 @@ def get_metrics(db_path: Path = DB_PATH) -> dict[str, Any]:
         ).fetchall()
         outcomes_counts = {r["outcome"]: r["cnt"] for r in outcomes_rows}
 
-        recovered_count = outcomes_counts.get("recovered", 0)
+        total_recovered = outcomes_counts.get("recovered", 0)
+        retry_recovered = conn.execute(
+            "SELECT COUNT(*) FROM calls WHERE outcome = 'recovered' AND (note LIKE '%retry%' OR note LIKE '%Mandate%')"
+        ).fetchone()[0]
+        link_recovered = conn.execute(
+            "SELECT COUNT(*) FROM calls WHERE outcome = 'recovered' AND (note LIKE '%link%' OR note LIKE '%payment link%')"
+        ).fetchone()[0]
+        if retry_recovered + link_recovered < total_recovered:
+            retry_recovered = total_recovered - link_recovered
+
         link_sent_count = outcomes_counts.get("link_sent", 0)
         scheduled_count = outcomes_counts.get("scheduled", 0)
         escalate_count = outcomes_counts.get("escalate", 0)
         declined_count = outcomes_counts.get("declined", 0)
+        failed_count = outcomes_counts.get("verification_failed", 0)
+        wrong_party_count = outcomes_counts.get("wrong_party", 0)
+        no_answer_count = outcomes_counts.get("no_answer", 0)
 
-        # Paid link recoveries
-        paid_links = conn.execute("SELECT COUNT(*) FROM link_events WHERE event_type = 'paid'").fetchone()[0]
-
-        total_recovered = recovered_count + paid_links
         recovery_rate = (total_recovered / total_calls * 100) if total_calls > 0 else 0.0
 
         avg_dur_row = conn.execute("SELECT AVG(duration_sec) FROM calls WHERE duration_sec > 0").fetchone()
@@ -464,13 +485,16 @@ def get_metrics(db_path: Path = DB_PATH) -> dict[str, Any]:
 
         return {
             "total_calls": total_calls,
-            "recovered_count": recovered_count,
+            "total_recovered": total_recovered,
+            "recovered_count": retry_recovered,
+            "paid_links_count": link_recovered,
             "link_sent_count": link_sent_count,
             "scheduled_count": scheduled_count,
             "escalated_count": escalate_count,
             "declined_count": declined_count,
-            "paid_links_count": paid_links,
-            "total_recovered": total_recovered,
+            "verification_failed_count": failed_count,
+            "wrong_party_count": wrong_party_count,
+            "no_answer_count": no_answer_count,
             "recovery_rate": round(recovery_rate, 1),
             "average_duration_sec": avg_duration,
             "outcomes_breakdown": outcomes_counts,
