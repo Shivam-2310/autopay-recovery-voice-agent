@@ -24,7 +24,8 @@ from livekit.agents import Agent, AgentSession, JobContext
 from livekit.plugins import deepgram, elevenlabs, silero
 from livekit.plugins import langchain as lk_langchain
 
-from src.db import get_conn, get_outcomes, save_outcome, set_customer_dnd
+import requests
+
 from src.graph import build_graph
 from src.guardrails import (
     check_duration_limit,
@@ -37,7 +38,6 @@ from src.guardrails import (
     shield_unverified_output,
 )
 from src.llm import get_llm_with_fallbacks
-from src.models import Outcome
 from src.prompts import build_system_prompt
 from src.sanitizer import tts_sanitizer_transform
 from src.tools import CallState, make_tools
@@ -46,6 +46,53 @@ load_dotenv()
 
 logger = logging.getLogger("agent")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+
+API_BASE_URL = os.environ.get("API_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
+INTERNAL_SECRET = os.environ.get("INTERNAL_SECRET", "secret_internal_token_change_me")
+
+
+def _post_internal_event(call_id: str, event_type: str, payload: dict[str, Any]) -> None:
+    """Send telemetry or turn event to FastAPI backend via internal endpoint."""
+    url = f"{API_BASE_URL}/internal/events"
+    headers = {
+        "X-Internal-Secret": INTERNAL_SECRET,
+        "Content-Type": "application/json",
+    }
+    body = {
+        "call_id": call_id,
+        "event_type": event_type,
+        "payload": payload,
+    }
+    try:
+        resp = requests.post(url, json=body, headers=headers, timeout=2.0)
+        if resp.status_code != 200:
+            logger.debug("Internal event %s returned HTTP %s", event_type, resp.status_code)
+    except Exception as e:
+        logger.debug("Failed to post internal event %s: %s", event_type, e)
+
+
+def _send_sms_via_api(call_id: str, customer_id: str, first_name: str, amount: float) -> dict[str, Any]:
+    """Request FastAPI backend to dispatch payment link SMS via internal endpoint."""
+    url = f"{API_BASE_URL}/internal/sms"
+    headers = {
+        "X-Internal-Secret": INTERNAL_SECRET,
+        "Content-Type": "application/json",
+    }
+    body = {
+        "call_id": call_id,
+        "customer_id": customer_id,
+        "first_name": first_name,
+        "amount": amount,
+    }
+    try:
+        resp = requests.post(url, json=body, headers=headers, timeout=5.0)
+        if resp.status_code == 200:
+            return resp.json()
+        logger.warning("Internal SMS dispatch returned HTTP %s: %s", resp.status_code, resp.text)
+        return {"status": "error", "error": f"HTTP {resp.status_code}"}
+    except Exception as e:
+        logger.error("Failed to call internal SMS endpoint: %s", e)
+        return {"status": "error", "error": str(e)}
 
 
 def prewarm(proc: agents.JobProcess) -> None:
@@ -68,7 +115,11 @@ def _build_session(
 ) -> tuple[AgentSession, Agent]:
     """Construct an AgentSession and Agent for a single call."""
     llm = get_llm_with_fallbacks()
-    tools = make_tools(state, emit_event_fn=emit_fn)
+    tools = make_tools(
+        state,
+        emit_event_fn=emit_fn,
+        send_sms_fn=lambda cid, fname, amt: _send_sms_via_api(state.call_id, cid, fname, amt),
+    )
     graph = build_graph(llm=llm, tools=tools)
 
     # 1. ElevenLabs configuration strictly from env
@@ -159,16 +210,18 @@ async def entrypoint(ctx: JobContext) -> None:
         logger.error("No customer data available for job %s, room %s", ctx.job.id, ctx.room.name)
         return
 
-    logger.info("Initializing call session for customer: %s (%s)", customer["id"], customer.get("name", "Unknown"))
+    call_id = ctx.room.name or f"call-{customer['id']}"
+    logger.info("Initializing call session %s for customer: %s (%s)", call_id, customer["id"], customer.get("name", "Unknown"))
 
     call_state = CallState(
         customer_id=customer["id"],
         customer_record=customer,
-        call_id=ctx.room.name or f"call-{customer['id']}",
+        call_id=call_id,
     )
 
     def _on_event(event_type: str, payload: dict) -> None:
         logger.info("Agent Event [%s]: %s", event_type, payload)
+        _post_internal_event(call_id, event_type, payload)
 
     vad = ctx.proc.userdata.get("vad")
     session, agent = _build_session(customer, call_state, emit_fn=_on_event, vad=vad)
@@ -193,32 +246,39 @@ async def entrypoint(ctx: JobContext) -> None:
         if not text:
             return
         logger.info(">>> Customer spoke: %s", text)
+        _post_internal_event(call_id, "turn", {"speaker": "customer", "text": text, "is_final": True})
 
         # Check guardrails on user input
         if detect_do_not_call(text):
             call_state.do_not_call = True
-            set_customer_dnd(customer["id"])
             logger.warning("Guardrail 6 (DND) triggered: customer requested Do Not Call")
+            _post_internal_event(call_id, "guardrail.triggered", {"id": 6, "name": "do_not_call", "action": "set_dnd"})
+            _post_internal_event(call_id, "state.update", {"customer_id": customer["id"], "do_not_call": True})
 
         has_creds, cred_type = detect_card_or_credentials(text)
         if has_creds:
             logger.warning("Guardrail 4 (Credentials Blocker) triggered: %s", cred_type)
+            _post_internal_event(call_id, "guardrail.triggered", {"id": 4, "name": "card_or_credentials_blocker", "action": "block_and_redirect", "detail": cred_type})
 
         is_dispute, dispute_reason = detect_dispute_or_escalation(text)
         if is_dispute:
             logger.info("Guardrail 5 (Dispute/Escalate) triggered: %s", dispute_reason)
+            _post_internal_event(call_id, "guardrail.triggered", {"id": 5, "name": "dispute_hardship_escalate", "action": "flag_escalation", "detail": dispute_reason})
 
         if detect_wrong_party(text):
             logger.info("Guardrail 3 (Wrong Party) triggered")
+            _post_internal_event(call_id, "guardrail.triggered", {"id": 3, "name": "wrong_party", "action": "end_call"})
 
         if detect_prompt_injection(text):
             logger.warning("Guardrail 8 (Prompt Injection) blocked adversarial input")
+            _post_internal_event(call_id, "guardrail.triggered", {"id": 8, "name": "prompt_injection", "action": "block"})
 
     @session.on("agent_speech_committed")
     def on_agent_speech(ev: Any) -> None:
         text = getattr(ev, "text", "") or getattr(ev, "content", "")
         if text:
             logger.info("<<< Agent spoke: %s", text)
+            _post_internal_event(call_id, "turn", {"speaker": "agent", "text": text, "is_final": True})
 
         # If terminal outcome was reached, schedule clean room disconnect after speaking
         if call_state.is_terminal():
@@ -241,15 +301,13 @@ async def entrypoint(ctx: JobContext) -> None:
         final_outcome = call_state.terminal_outcome or "declined"
         note = call_state.outcome_note or "Call ended before terminal resolution"
 
-        save_outcome(
-            Outcome(
-                customer_id=customer["id"],
-                disposition=final_outcome,
-                notes=note,
-                transcript=full_transcript,
-                duration_sec=round(duration, 2),
-            )
-        )
+        _post_internal_event(call_id, "call.ended", {
+            "customer_id": customer["id"],
+            "final_outcome": final_outcome,
+            "outcome_note": note,
+            "duration_sec": round(duration, 2),
+            "transcript": full_transcript,
+        })
 
     # Wait for phone to be answered
     logger.info("Waiting for customer to answer the phone (45s timeout)...")
@@ -258,15 +316,23 @@ async def entrypoint(ctx: JobContext) -> None:
         logger.info("Customer answered: %s (kind=%s)", participant.identity, participant.kind)
     except TimeoutError:
         logger.warning("Call timed out waiting for customer to answer")
-        save_outcome(
-            Outcome(customer_id=customer["id"], disposition="no_answer", notes="No answer after 45s ringing")
-        )
+        _post_internal_event(call_id, "call.ended", {
+            "customer_id": customer["id"],
+            "final_outcome": "no_answer",
+            "outcome_note": "No answer after 45s ringing",
+            "duration_sec": 0,
+            "transcript": "",
+        })
         return
     except Exception as e:
         logger.warning("Call disconnected before answer: %s", e)
-        save_outcome(
-            Outcome(customer_id=customer["id"], disposition="no_answer", notes=f"Disconnected before answer: {e}")
-        )
+        _post_internal_event(call_id, "call.ended", {
+            "customer_id": customer["id"],
+            "final_outcome": "no_answer",
+            "outcome_note": f"Disconnected before answer: {e}",
+            "duration_sec": 0,
+            "transcript": "",
+        })
         return
 
     # Start audio session with the answering participant
@@ -280,6 +346,8 @@ async def entrypoint(ctx: JobContext) -> None:
         f"Am I speaking with {customer.get('name', 'the account holder')}?"
     )
     logger.info("Speaking first turn greeting: %s", greeting)
+    _post_internal_event(call_id, "guardrail.triggered", {"id": 1, "name": "ai_and_recording_disclosure", "action": "spoken_turn_one"})
+    _post_internal_event(call_id, "turn", {"speaker": "agent", "text": greeting, "is_final": True})
     await session.say(greeting, allow_interruptions=False)
 
 

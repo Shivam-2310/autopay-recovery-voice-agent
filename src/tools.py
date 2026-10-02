@@ -53,6 +53,7 @@ class CallState:
 def make_tools(
     state: CallState,
     emit_event_fn: Callable[[str, dict[str, Any]], None] | None = None,
+    send_sms_fn: Callable[[str, str, float], dict[str, Any]] | None = None,
 ) -> list[Any]:
     """Factory creating per-call tools bound to the active CallState."""
 
@@ -184,6 +185,27 @@ def make_tools(
             return "Error: Identity is not verified. You must verify identity with birth year first."
         if state.is_terminal():
             return "Call outcome is already finalized. Conclude the conversation."
+
+        # Guardrail 10: Truth in delivery
+        if send_sms_fn:
+            amt = float(state.customer_record.get("amount_due", 0.0))
+            fname = state.customer_record.get("first_name") or state.customer_record.get("name", "").split()[0]
+            sms_res = send_sms_fn(state.customer_id, fname, amt)
+            if sms_res.get("status") != "success":
+                state.terminal_outcome = None
+                state.sms_sent = False
+                state.stage = "offering"
+                _emit("guardrail.triggered", {
+                    "id": 10,
+                    "name": "truth_in_delivery",
+                    "action": "offer_callback_on_sms_failure",
+                    "error": sms_res.get("error", "SMS dispatch failed"),
+                })
+                return (
+                    "The SMS delivery system encountered a temporary error and the payment link could not be sent. "
+                    "Inform the customer politely that the link could not be delivered right now, "
+                    "and offer to schedule a callback instead."
+                )
 
         state.offers_made += 1
         state.sms_sent = True
