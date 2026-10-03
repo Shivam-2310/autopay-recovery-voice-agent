@@ -7,7 +7,7 @@
 [![LangGraph](https://img.shields.io/badge/LangGraph-ReAct%20Brain-FF6F00)](https://langchain.com)
 [![React](https://img.shields.io/badge/React-19%20%2B%20TS%20%2B%20Tailwind-61DAFB?logo=react)](https://react.dev)
 
-An enterprise-grade, deterministic, and compliance-hardened outbound voice agent designed for **Razorpay Autopay payment recovery**. Built with **LiveKit WebRTC + Twilio SIP + Deepgram + ElevenLabs + LangGraph**, featuring a real **FastAPI backend**, an executive **React dashboard**, full SMS payment link tracking, and a 10-persona synthetic evaluation suite.
+An enterprise-grade, deterministic, and compliance-hardened outbound voice agent designed for **automated autopay payment recovery**. Built with **LiveKit WebRTC + Twilio SIP + Deepgram + ElevenLabs + LangGraph**, featuring a real **FastAPI backend**, an executive **React dashboard**, full SMS payment link tracking, and a 10-persona synthetic evaluation suite.
 
 ---
 
@@ -20,7 +20,7 @@ An enterprise-grade, deterministic, and compliance-hardened outbound voice agent
                           │   - WebSocket Telemetry Hub (/ws)                      │
                           │   - Twilio Messages API & Status Webhooks              │
                           │   - LiveKit Subscribe-Only Token Generator             │
-                          │   - Mock Razorpay Payment Portal (/pay/{token})        │
+                          │   - Mock Payment Portal (/pay/{token})                 │
                           └───────────▲───────────────────────────────▲────────────┘
                                       │                               │
                        HTTP /internal/events & /internal/sms          │ WebSockets / REST
@@ -130,7 +130,7 @@ uv run python scripts/voice_preview.py --voice TX3LPaxmHKxFdv7VOQHJ --text "Hell
 ```bash
 uv run uvicorn src.api.main:app --host 127.0.0.1 --port 8000 --reload
 ```
-*Initializes SQLite schema, WebSocket stream on `ws://127.0.0.1:8000/ws`, REST endpoints, and mock Razorpay payment portal.*
+*Initializes SQLite schema, WebSocket stream on `ws://127.0.0.1:8000/ws`, REST endpoints, and mock payment portal.*
 
 ### Terminal 2: LiveKit Agent Worker
 ```bash
@@ -240,9 +240,9 @@ uv run python -m src.report --transcripts
 
 ## 10. Production Roadmap
 
-1. **Razorpay Webhooks Integration**: Ingest real-time `payment.failed`, `subscription.paused`, and `invoice.expired` webhooks to queue calls automatically.
+1. **Payment Gateway Webhooks Integration**: Ingest real-time `payment.failed`, `subscription.paused`, and `invoice.expired` webhooks to queue calls automatically.
 2. **TRAI / DND Registry Scrubbing**: Integrate real-time National Do Not Call (NDNC) registry checks prior to SIP trunk dialing.
 3. **Adaptive Cadence Engine**: Dynamic retry scheduling (e.g. 1st retry at T+4h, 2nd at T+24h, 3rd at T+72h) aligned with RBI recurring mandate guidelines.
-4. **PCI-DSS L1 Compliant Links**: Integration with Razorpay Payment Links API generating short URLs (`rzp.io/l/...`) with automated token expiry and webhook callbacks.
+4. **PCI-DSS L1 Compliant Links**: Integration with payment gateway APIs to generate short payment URLs with automated token expiry and webhook callbacks.
 5. **Automated LLM Evaluation**: Continuous evaluation of conversation transcripts against empathy, clarity, safety, and conciseness benchmarks.
 6. **Enterprise Authentication**: Role-based access control (RBAC) with SSO on dashboard routes and audit logging for customer data access.

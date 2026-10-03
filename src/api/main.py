@@ -5,7 +5,7 @@ Provides:
 - WebSocket endpoint /ws for real-time telemetry streaming
 - Protected /internal/events and /internal/sms endpoints for LiveKit agent worker
 - LiveKit listen-token generation for hidden, subscribe-only audio monitoring
-- Mock Razorpay payment portal at /pay/{token}
+- Mock payment portal at /pay/{token}
 """
 
 from __future__ import annotations
@@ -583,10 +583,10 @@ async def dispatch_worker_sms(
     return res
 
 
-# ── Mock Razorpay Payment Page & Completion ──────────────────────────────────
+# ── Mock Payment Page & Completion ────────────────────────────────────────────
 @app.get("/pay/{token}", response_class=HTMLResponse)
 async def mock_payment_page(token: str) -> str:
-    """Razorpay-styled mock payment page."""
+    """Mock payment page styled like a real payment gateway."""
     with get_conn() as conn:
         row = conn.execute("SELECT call_id FROM link_events WHERE token = ? LIMIT 1", (token,)).fetchone()
         call_id = row["call_id"] if row else "unknown"
@@ -675,9 +675,9 @@ async def mock_payment_page(token: str) -> str:
 </head>
 <body>
   <div class="card">
-    <div class="badge">⚡ FDE Assignment Demonstration Mock</div>
+    <div class="badge">⚡ PayEase Secure Checkout</div>
     <h1>PayEase Secure Payment</h1>
-    <p>This is a simulated Razorpay-style payment portal. Click below to complete your payment.</p>
+    <p>Complete your pending autopay payment securely below.</p>
     <button class="pay-btn" id="payBtn" onclick="submitPayment()">Pay Now</button>
     <div class="success-box" id="successBox">✓ Payment Successful! Thank you.</div>
   </div>

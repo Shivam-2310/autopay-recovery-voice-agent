@@ -25,7 +25,7 @@ export const MessagesTab: React.FC<MessagesTabProps> = ({
             </span>
           </h2>
           <p className="text-xs text-slate-400 mt-0.5">
-            Full conversion tracking from SMS dispatch to mock Razorpay portal completion.
+            Full conversion tracking from SMS dispatch to mock payment portal completion.
           </p>
         </div>
 

@@ -298,7 +298,7 @@ export function App() {
       </main>
 
       <footer className="border-t border-slate-900 bg-slate-950 py-3 text-center text-xs text-slate-500">
-        PayEase Autopay Recovery Voice Agent · Razorpay FDE Assignment Solution · LiveKit WebRTC + Deepgram + ElevenLabs
+        PayEase Autopay Recovery Voice Agent · LiveKit WebRTC + Deepgram + ElevenLabs
       </footer>
     </div>
   );

@@ -74,7 +74,7 @@ export const Header: React.FC<HeaderProps> = ({
             <h1 className="text-base font-bold text-white tracking-tight flex items-center gap-2">
               PayEase Autopay Recovery
               <span className="text-[10px] uppercase tracking-wider font-semibold bg-sky-950 text-sky-400 px-2 py-0.5 rounded border border-sky-800/50">
-                FDE Voice Agent
+                Voice Agent
               </span>
             </h1>
             <p className="text-xs text-slate-400">Deterministic Guardrails & Real-Time SIP Telemetry</p>
