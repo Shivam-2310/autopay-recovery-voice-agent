@@ -9,6 +9,7 @@ services:
       - .env
     environment:
       - DATABASE_PATH=/app/data/outcomes.db
+      - CUSTOMERS_FILE=/app/data/customers.json
       - PYTHONUNBUFFERED=1
     ports:
       - "${BACKEND_PORT:-8000}:8000"
@@ -33,6 +34,8 @@ services:
     environment:
       - API_BASE_URL=http://backend:8000
       - PYTHONUNBUFFERED=1
+    volumes:
+      - voice-agent-data:/app/data
     depends_on:
       backend:
         condition: service_healthy
