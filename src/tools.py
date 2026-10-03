@@ -66,7 +66,7 @@ def make_tools(
                 logger.warning("Failed to emit event %s: %s", event_type, e)
 
     @tool
-    def verify_identity(birth_year: int) -> str:
+    def verify_identity(birth_year: int | str) -> str:
         """Verify the customer's identity using their 4-digit birth year.
 
         Must be called before discussing any account balance, amounts, or payment options.
@@ -77,14 +77,29 @@ def make_tools(
         Returns:
             Instructions for the model including spoken account details on success.
         """
-        logger.info("Tool: verify_identity called for customer %s", state.customer_id)
+        logger.info("Tool: verify_identity called for customer %s with input: %s", state.customer_id, birth_year)
         if state.is_terminal():
             return "[INTERNAL STATUS: Call outcome is already finalized.]"
 
         state.verification_attempts += 1
         expected_year = state.customer_record.get("birth_year")
 
-        if expected_year and birth_year == int(expected_year):
+        # Parse birth year robustly (handles int, str, and 2-digit abbreviations like 88 -> 1988)
+        parsed_year: int | None = None
+        try:
+            if isinstance(birth_year, str):
+                digits = "".join(ch for ch in birth_year if ch.isdigit())
+                if digits:
+                    parsed_year = int(digits)
+            elif isinstance(birth_year, (int, float)):
+                parsed_year = int(birth_year)
+        except Exception:
+            pass
+
+        if parsed_year is not None and 0 <= parsed_year <= 99:
+            parsed_year = 1900 + parsed_year if parsed_year >= 30 else 2000 + parsed_year
+
+        if expected_year and parsed_year is not None and parsed_year == int(expected_year):
             state.verified = True
             state.stage = "verified"
             _emit("state.update", {

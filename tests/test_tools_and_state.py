@@ -51,6 +51,16 @@ def test_verify_identity_success_returns_spoken_details(sample_customer):
     assert "HDFC Bank" in res
 
 
+def test_verify_identity_handles_two_digit_and_string_year(sample_customer):
+    state = CallState(customer_id="CUST-001", customer_record=sample_customer)
+    tools = {t.name: t for t in make_tools(state)}
+
+    # Customer Aarav Sharma born in 1988 says "88"
+    res = tools["verify_identity"].invoke({"birth_year": "88"})
+    assert state.verified is True
+    assert "Identity verified successfully" in res
+
+
 def test_verify_identity_max_two_attempts(sample_customer):
     state = CallState(customer_id="CUST-001", customer_record=sample_customer)
     tools = {t.name: t for t in make_tools(state)}
