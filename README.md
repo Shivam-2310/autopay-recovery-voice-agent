@@ -6,8 +6,26 @@
 [![ElevenLabs](https://img.shields.io/badge/ElevenLabs-Turbo%20v2.5-F3A530)](https://elevenlabs.io)
 [![LangGraph](https://img.shields.io/badge/LangGraph-ReAct%20Brain-FF6F00)](https://langchain.com)
 [![React](https://img.shields.io/badge/React-19%20%2B%20TS%20%2B%20Tailwind-61DAFB?logo=react)](https://react.dev)
+[![Architecture Doc](https://img.shields.io/badge/Architecture-DESIGN.md-blue)](./DESIGN.md)
 
-An enterprise-grade, deterministic, and compliance-hardened outbound voice agent designed for **automated autopay payment recovery**. Built with **LiveKit WebRTC + Twilio SIP + Deepgram + ElevenLabs + LangGraph**, featuring a real **FastAPI backend**, an executive **React dashboard**, full SMS payment link tracking, and a 10-persona synthetic evaluation suite.
+An enterprise-grade, deterministic, and compliance-hardened outbound voice agent designed for **automated autopay payment recovery** (e-mandates, card recurring billing, ACH/NACH debits). Built with **LiveKit WebRTC + Twilio SIP + Deepgram Nova-3 + ElevenLabs + LangGraph**, featuring a real **FastAPI gateway**, an executive **React dashboard**, full SMS payment link conversion tracking, WebRTC live audio monitoring, and a 10-persona synthetic evaluation suite.
+
+> 📖 **Deep Dive**: For a technical breakdown of state machines, telephony pipelines, and security decoupled architectures, see [**DESIGN.md**](./DESIGN.md).
+
+---
+
+## Key Features & Capabilities
+
+- 📞 **Outbound SIP Telephony**: Dial any customer live via Twilio PSTN trunking, or execute an automated sequential queue across all roster candidates.
+- ⚡ **1-Click Demo Reset**: Instantly purge previous trial runs and start your presentation from a clean 0-metric state.
+- 🎧 **WebRTC Live Audio Monitor**: Listen in real-time to active calls directly from the browser using a subscribe-only LiveKit token.
+- 🛡️ **11 Deterministic Guardrails**: Hard limits on disclosure, card/CVV sharing, DND, disputes, call duration (4m ceiling), and prompt injections.
+- 🔒 **Zero Financial Leakage**: Amounts, banks, and failure reasons are completely hidden from the LLM prompt context until identity verification succeeds via 4-digit birth year.
+- 🤖 **Deterministic Safety Net**: Guarantees SMS payment link dispatch even if an LLM generates spoken text without calling the tool.
+- 📊 **Dynamic KPI Dashboard**: Live WebSocket-driven metric cards (`Total Calls`, `Recovered`, `Payment Links`, `Callbacks`, `Escalated`, `Declined`, `Avg Duration`).
+- 🔗 **Full Link Conversion Funnel**: Tracks SMS from dispatch → carrier delivery → portal click → payment confirmation.
+- 💳 **Branded Payment Portal**: Mock checkout interface (`/pay/{token}`) with 1-click simulated payment and immediate webhook callback.
+- 🔍 **Container Log Observability**: Built-in Dozzle service on port `8888` for live inspection of container logs.
 
 ---
 
@@ -21,6 +39,7 @@ An enterprise-grade, deterministic, and compliance-hardened outbound voice agent
                           │   - Twilio Messages API & Status Webhooks              │
                           │   - LiveKit Subscribe-Only Token Generator             │
                           │   - Mock Payment Portal (/pay/{token})                 │
+                          │   - 1-Click Demo Reset Engine (/api/demo/reset)        │
                           └───────────▲───────────────────────────────▲────────────┘
                                       │                               │
                        HTTP /internal/events & /internal/sms          │ WebSockets / REST
@@ -28,12 +47,13 @@ An enterprise-grade, deterministic, and compliance-hardened outbound voice agent
                                       │                               │
 ┌─────────────────────────────────────▼───────┐   ┌───────────────────▼────────────────┐
 │           LIVEKIT AGENT WORKER              │   │            REACT DASHBOARD         │
-│  - Deepgram STT (tuned endpointing: 350ms)  │   │  - Vite + React + TS + Tailwind    │
-│  - ElevenLabs TTS (Indian-English persona)  │   │  - Overview KPI Cards & Queue      │
+│  - Deepgram Nova-3 STT (300ms endpointing)  │   │  - Vite + React + TS + Tailwind    │
+│  - ElevenLabs TTS (Aanya Persona 24kHz)     │   │  - Overview KPI Cards & Queue      │
 │  - Spoken TTS Sanitizer (zero markdown)     │   │  - Real-time Streaming Transcript  │
 │  - LangGraph ReAct brain                    │   │  - Guardrail & Tool Chips Feed     │
-│  - 11 Deterministic Safety Guardrails       │   │  - WebRTC Live Listen Audio Player │
-│  - Stateful in-process tools                │   │  - SMS Timeline & Audit History    │
+│  - Runtime Safety Fallback Interceptor      │   │  - WebRTC Live Listen Audio Player │
+│  - 11 Deterministic Safety Guardrails       │   │  - SMS Timeline & Audit History    │
+│  - Normalized Speech Turn Deduplication     │   │  - 1-Click Demo Reset Action       │
 └─────────────────────▲───────────────────────┘   └────────────────────────────────────┘
                       │
            SIP Trunk Outbound Call
@@ -47,7 +67,7 @@ An enterprise-grade, deterministic, and compliance-hardened outbound voice agent
             └─────────▲─────────┘
                       │ PSTN
             ┌─────────▼─────────┐
-            │    DEMO_PHONE     │ (Strict E.164 lock: +91XXXXXX1234)
+            │    DEMO_PHONE     │ (Strict E.164 lock: +91XXXXXX4866)
             └───────────────────┘
 ```
 
@@ -56,8 +76,6 @@ An enterprise-grade, deterministic, and compliance-hardened outbound voice agent
 2. **Zero Financial Leakage**: Amounts, due dates, failure reasons, and bank names are withheld from model context and prompts before identity verification. `verify_identity` returns them in spoken format (*"two thousand four hundred ninety-nine rupees"*).
 3. **Deterministic Guardrails**: Disputing, DND, and prompt injection use keyword/regex backstops without secondary per-turn LLM calls.
 4. **First Terminal Outcome Wins**: Once a call outcome is finalized (`recovered`, `link_sent`, `scheduled`, `escalate`, `declined`, `verification_failed`, `wrong_party`), subsequent tool calls cannot overwrite it.
-
----
 
 ## 2. The 11 Guardrails
 
@@ -210,23 +228,27 @@ npm run dev
 
 Before placing a live call, ensure `DEMO_PHONE` in `.env` is set to your verified physical phone number.
 
+> 💡 **Presentation Tip**: Click the red **Reset Demo** button in the dashboard navigation bar before starting. This purges all test data and sets all metric cards to **0** for a clean demonstration.
+
 ### Scenario 1: Successful Bank Retry (`recovered`)
-1. In the Dashboard Overview, find **Aarav Sharma (CUST-001)** (Reason: `insufficient_funds`).
-2. Click **Call**. Your phone will ring.
-3. Answer and confirm: *"Yes, speaking."*
-4. When asked for birth year, say: *"Nineteen eighty-eight"* (`1988`).
-5. Aanya explains the failed debit of ₹2,499 from HDFC Bank due to insufficient funds.
-6. Say: *"Please retry debiting my account now."*
-7. **Verification**: Aanya confirms success, records `recovered` (via mandate retry), and cleanly disconnects.
+1. Click **Reset Demo** to start with a fresh slate.
+2. In the Dashboard Overview, find **Aarav Sharma (CUST-001)** (Reason: `insufficient_funds`).
+3. Click **Call**. Your phone will ring.
+4. Answer and confirm: *"Yes, speaking."*
+5. When asked for birth year, say: *"Nineteen eighty-eight"* (`1988`).
+6. Aanya explains the failed debit of ₹2,499 from HDFC Bank due to insufficient funds.
+7. Say: *"Please retry debiting my account now."*
+8. **Verification**: Aanya confirms success, records `recovered` (via mandate retry), and cleanly disconnects.
 
 ### Scenario 2: SMS Payment Link Settlement (`link_sent` → `recovered via link`)
-1. Click **Call** on **Priya Patel (CUST-002)** (Reason: `mandate_expired`).
-2. Answer and verify with: *"Nineteen ninety-two"* (`1992`).
-3. Aanya explains that the mandate has expired and offers a secure link.
-4. Say: *"Please send me the link via SMS."*
-5. Aanya calls `send_payment_link()`, confirms dispatch, and says goodbye.
-6. Open the **SMS & Links** tab on the dashboard, click **Open Portal** on the link, and click **Pay Now**.
-7. **Verification**: Call outcome immediately upgrades to `recovered (via link)`.
+1. Click **Reset Demo** if starting a new demonstration.
+2. Click **Call** on **Aarav Sharma (CUST-001)** or **Priya Patel (CUST-002)**.
+3. Answer and verify with the 4-digit birth year (`1988` for Aarav, `1992` for Priya).
+4. When asked for payment method, say: *"Please send the payment link by SMS."*
+5. The agent (backed by the runtime safety interceptor) immediately dispatches the SMS via Twilio, updates the call state to `link_sent`, and bids goodbye.
+6. Open your phone's SMS inbox (or open the **SMS & Links** tab on the dashboard and click **Open Portal**).
+7. On the PayEase checkout page, click **Pay Now**.
+8. **Verification**: The dashboard instantly broadcasts `payment.confirmed`, and the call and customer status upgrade dynamically to `recovered` (100% recovery rate).
 
 ### Scenario 3: Wrong Party / Privacy Defense (`wrong_party`)
 1. Click **Call** on **Ananya Reddy (CUST-006)**.
