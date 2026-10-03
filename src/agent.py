@@ -122,6 +122,40 @@ def prewarm(proc: agents.JobProcess) -> None:
     logger.info("Worker pre-warmed successfully.")
 
 
+def _safe_to_chat_chunk(msg: Any) -> Any:
+    """Safely convert message tokens to LiveKit ChatChunk, strictly dropping tool messages."""
+    if (
+        isinstance(msg, (ToolMessage, ToolMessageChunk))
+        or getattr(msg, "type", None) == "tool"
+        or type(msg).__name__.startswith("Tool")
+    ):
+        return None
+
+    content: str | None = None
+    if isinstance(msg, str):
+        content = msg
+    elif hasattr(msg, "text") and isinstance(msg.text, str):
+        content = msg.text
+    elif hasattr(msg, "content") and isinstance(msg.content, str):
+        content = msg.content
+    elif isinstance(msg, dict):
+        raw = msg.get("content")
+        if isinstance(raw, str):
+            content = raw
+
+    if not content:
+        return None
+
+    from livekit.agents import llm, utils
+    return llm.ChatChunk(
+        id=getattr(msg, "id", None) or utils.shortuuid("LC_"),
+        delta=llm.ChoiceDelta(
+            role="assistant",
+            content=content,
+        ),
+    )
+
+
 class SafeLangGraphStream(lk_langchain.langgraph.LangGraphStream):
     """Filters out ToolMessages and non-chatbot nodes so internal tool returns are never streamed as spoken assistant chunks."""
 
@@ -153,14 +187,14 @@ class SafeLangGraphStream(lk_langchain.langgraph.LangGraphStream):
                 token_like = lk_langchain.langgraph._extract_message_chunk(item)
                 if token_like is None or isinstance(token_like, (ToolMessage, ToolMessageChunk)) or getattr(token_like, "type", None) == "tool":
                     continue
-                chat_chunk = lk_langchain.langgraph._to_chat_chunk(token_like)
+                chat_chunk = _safe_to_chat_chunk(token_like)
                 if chat_chunk:
                     self._event_ch.send_nowait(chat_chunk)
             else:
                 token_like = lk_langchain.langgraph._extract_message_chunk(item)
                 if token_like is None or isinstance(token_like, (ToolMessage, ToolMessageChunk)) or getattr(token_like, "type", None) == "tool":
                     continue
-                chat_chunk = lk_langchain.langgraph._to_chat_chunk(token_like)
+                chat_chunk = _safe_to_chat_chunk(token_like)
                 if chat_chunk:
                     self._event_ch.send_nowait(chat_chunk)
 

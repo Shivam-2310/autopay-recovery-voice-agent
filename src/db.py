@@ -14,8 +14,10 @@ from zoneinfo import ZoneInfo
 
 from src.models import Outcome
 
-DB_PATH = Path(__file__).resolve().parent.parent / "outcomes.db"
-CUSTOMERS_FILE = Path(__file__).resolve().parent.parent / "customers.json"
+import os
+
+DB_PATH = Path(os.environ.get("DATABASE_PATH", str(Path(__file__).resolve().parent.parent / "outcomes.db")))
+CUSTOMERS_FILE = Path(os.environ.get("CUSTOMERS_FILE", str(Path(__file__).resolve().parent.parent / "customers.json")))
 IST = ZoneInfo("Asia/Kolkata")
 
 _SCHEMA = """
@@ -103,6 +105,8 @@ CREATE TABLE IF NOT EXISTS outcomes (
 
 def get_conn(db_path: Path = DB_PATH) -> sqlite3.Connection:
     """Return a connection with WAL mode enabled for safe concurrent reads."""
+    db_path = Path(db_path)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path))
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")

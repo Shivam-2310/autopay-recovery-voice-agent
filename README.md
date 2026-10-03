@@ -110,7 +110,66 @@ cp .env.example .env
 
 ---
 
-## 4. Voice Catalog & Preview
+## 4. Unified Runner & Deployment (Local vs AWS VM)
+
+The application includes an automated runner script ([`run.sh`](file:///mnt/c/Users/nshiv/Downloads/Projects/voice-agent/run.sh)) with dedicated flags for **Local Development** and **AWS VM Production Deployment**:
+
+### A. Run on Local Machine (`--local`)
+Binds the React/Nginx frontend to port `5173`, FastAPI backend to `8000`, and runs with hot auto-recovery:
+
+```bash
+# Ensure your credentials are set in .env
+cp .env.example .env
+
+# Run locally via Docker
+./run.sh --local
+```
+- **Web Dashboard**: `http://localhost:5173`
+- **FastAPI Backend**: `http://localhost:8000`
+- **WebSocket Gateway**: `ws://localhost:5173/ws`
+
+---
+
+### B. Deploy on AWS VM (`--aws`)
+Optimized for AWS EC2 or Lightsail instances. Automatically detects the VM's public IP, configures the SMS payment link URL (`PUBLIC_BASE_URL`), sets standard HTTP port `80`, and configures `restart: always` for persistent auto-recovery across VM reboots:
+
+```bash
+# 1. On your AWS VM, bootstrap Docker & dependencies (Ubuntu/Debian)
+bash scripts/setup_aws_vm.sh
+
+# 2. Configure .env with your LiveKit, Twilio, ElevenLabs, Deepgram & LLM keys
+cp .env.example .env
+nano .env
+
+# 3. Deploy full stack with the AWS flag
+./run.sh --aws
+```
+- **Web Dashboard**: `http://<YOUR-AWS-VM-PUBLIC-IP>` (Direct port 80 access)
+- **API Health Check**: `http://<YOUR-AWS-VM-PUBLIC-IP>/api/health`
+- **EC2 Security Group Requirements**: Open inbound TCP port `80` (HTTP) and port `443` (HTTPS). Port `8000` can remain internal since Nginx reverse-proxies `/api/`, `/pay/`, and `/ws`.
+
+---
+
+### Useful CLI Management Commands
+```bash
+# Check container status and health probe
+./run.sh --status
+
+# Tail logs (all services or specific service)
+./run.sh --logs
+./run.sh --logs agent
+./run.sh --logs backend
+
+# Run automated test suite
+./run.sh --test
+
+# Stop all running containers
+./run.sh --stop
+```
+
+---
+
+## 5. Voice Catalog & Preview
 
 To explore and sample available ElevenLabs voices with accent and gender metadata:
 

@@ -104,15 +104,26 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS restricted strictly to localhost dashboard dev servers
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
+# CORS configuration — supports localhost and dynamic AWS VM IP/domains
+allowed_origins_env = os.environ.get("ALLOWED_ORIGINS", "").strip()
+if allowed_origins_env:
+    allow_origins = [orig.strip() for orig in allowed_origins_env.split(",") if orig.strip()]
+else:
+    allow_origins = [
         "http://localhost:5173",
         "http://127.0.0.1:5173",
         "http://localhost:3000",
         "http://127.0.0.1:3000",
-    ],
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+        "http://localhost",
+        "http://127.0.0.1",
+    ]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allow_origins,
+    allow_origin_regex=os.environ.get("ALLOWED_ORIGIN_REGEX", r"^https?://.*$"),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

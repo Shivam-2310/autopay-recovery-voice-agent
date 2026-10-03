@@ -1,0 +1,56 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    image: voice-agent-backend:latest
+    container_name: voice-agent-backend
+    env_file:
+      - .env
+    environment:
+      - DATABASE_PATH=/app/data/outcomes.db
+      - PYTHONUNBUFFERED=1
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    volumes:
+      - voice-agent-data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: ${DOCKER_RESTART:-unless-stopped}
+
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    image: voice-agent-agent:latest
+    container_name: voice-agent-agent
+    env_file:
+      - .env
+    environment:
+      - API_BASE_URL=http://backend:8000
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: ${DOCKER_RESTART:-unless-stopped}
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    image: voice-agent-frontend:latest
+    container_name: voice-agent-frontend
+    ports:
+      - "${FRONTEND_PORT:-5173}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: ${DOCKER_RESTART:-unless-stopped}
+
+volumes:
+  voice-agent-data:
+    name: voice-agent-data

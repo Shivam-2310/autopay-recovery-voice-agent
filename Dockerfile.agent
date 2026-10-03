@@ -1,0 +1,36 @@
+FROM python:3.12-slim-bookworm
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1
+
+# Install runtime system packages (curl, libgomp1 for onnx/audio models)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    ca-certificates \
+    libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv binary from official image
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+WORKDIR /app
+
+# Copy dependency manifests for layer caching
+COPY pyproject.toml uv.lock README.md ./
+
+# Install dependencies
+RUN uv sync --frozen --no-dev --no-install-project
+
+# Copy application source code and seed customer data
+COPY src/ ./src/
+COPY customers.json ./
+
+# Finalize project install
+RUN uv sync --frozen --no-dev
+ENV PATH="/app/.venv/bin:$PATH"
+
+# Pre-download Silero VAD model weights into container cache for zero-latency startup
+RUN python -c "from livekit.plugins import silero; silero.VAD.load()"
+
+CMD ["python", "src/agent.py", "dev"]
