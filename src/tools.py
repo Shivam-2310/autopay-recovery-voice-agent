@@ -176,8 +176,11 @@ def make_tools(
 
     @tool
     def send_payment_link() -> str:
-        """Send a secure payment link via SMS to the customer's registered mobile number.
+        """Send a secure payment link via SMS message to the customer's phone number.
 
+        CRITICAL MANDATORY ACTION: You MUST invoke this tool immediately whenever the customer requests,
+        agrees to, or asks for the payment link, SMS, or link to pay.
+        Never claim or speak that an SMS or payment link has been sent without invoking this tool.
         Can ONLY be called after identity is verified.
 
         Returns:

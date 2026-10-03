@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 _PRESETS: dict[str, dict[str, Any]] = {
     "groq": {
         "class": "langchain_openai.ChatOpenAI",
-        "default_model": "qwen/qwen3.8-27b",
+        "default_model": "openai/gpt-oss-120b",
         "base_url": "https://api.groq.com/openai/v1",
         "key_env": "GROQ_API_KEY",
     },
