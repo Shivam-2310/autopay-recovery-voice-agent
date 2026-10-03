@@ -92,7 +92,24 @@ if ! docker compose version &> /dev/null; then
     sudo ln -sf /usr/local/lib/docker/cli-plugins/docker-compose /usr/lib/docker/cli-plugins/docker-compose 2>/dev/null || true
 fi
 
-# 3. Add user to docker group & start service
+# 3. Ensure Docker Buildx (CLI plugin) is installed (required >= 0.17)
+if ! docker buildx version &> /dev/null; then
+    echo "▶ Installing Docker Buildx CLI plugin..."
+    ARCH="$(uname -m)"
+    case "$ARCH" in
+        x86_64)  BUILDX_ARCH="amd64" ;;
+        aarch64) BUILDX_ARCH="arm64" ;;
+        arm64)   BUILDX_ARCH="arm64" ;;
+        *)       BUILDX_ARCH="amd64" ;;
+    esac
+    sudo mkdir -p /usr/local/lib/docker/cli-plugins /usr/lib/docker/cli-plugins
+    BUILDX_URL="https://github.com/docker/buildx/releases/download/v0.21.1/buildx-v0.21.1.linux-${BUILDX_ARCH}"
+    sudo curl -SL "$BUILDX_URL" -o /usr/local/lib/docker/cli-plugins/docker-buildx
+    sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-buildx
+    sudo ln -sf /usr/local/lib/docker/cli-plugins/docker-buildx /usr/lib/docker/cli-plugins/docker-buildx 2>/dev/null || true
+fi
+
+# 4. Add user to docker group & start service
 echo "▶ Configuring Docker group permissions for user '${CURRENT_USER}'..."
 sudo usermod -aG docker "$CURRENT_USER" || true
 sudo systemctl enable docker || true

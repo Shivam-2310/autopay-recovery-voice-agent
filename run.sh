@@ -67,9 +67,53 @@ function detect_aws_ip() {
     echo "$detected_ip"
 }
 
+function log_cmd() {
+    echo -e "${BOLD}${BLUE}▶ Executing command:${NC} ${GREEN}$*${NC}"
+    "$@"
+}
+
+function ensure_docker_buildx() {
+    local need_install=0
+    if ! docker buildx version &>/dev/null; then
+        need_install=1
+    else
+        local v_str
+        v_str=$(docker buildx version 2>/dev/null | awk '{print $2}' | sed 's/^v//' | cut -d'-' -f1)
+        local major minor
+        major=$(echo "$v_str" | cut -d. -f1)
+        minor=$(echo "$v_str" | cut -d. -f2)
+        if [ "$major" -eq 0 ] && [ "$minor" -lt 17 ] 2>/dev/null; then
+            need_install=1
+        fi
+    fi
+
+    if [ "$need_install" -eq 1 ]; then
+        echo -e "${YELLOW}[!] Docker Buildx >= 0.17 is required for Compose build. Installing...${NC}"
+        local arch
+        arch="$(uname -m)"
+        case "$arch" in
+            x86_64)  arch="amd64" ;;
+            aarch64) arch="arm64" ;;
+            arm64)   arch="arm64" ;;
+            *)       arch="amd64" ;;
+        esac
+
+        mkdir -p "${HOME}/.docker/cli-plugins"
+        local dl_url="https://github.com/docker/buildx/releases/download/v0.21.1/buildx-v0.21.1.linux-${arch}"
+        echo -e "${BLUE}  Downloading buildx from ${dl_url}...${NC}"
+        if curl -sSLf "$dl_url" -o "${HOME}/.docker/cli-plugins/docker-buildx"; then
+            chmod +x "${HOME}/.docker/cli-plugins/docker-buildx"
+            echo -e "${GREEN}[✓] Docker Buildx $(docker buildx version | awk '{print $2}') installed successfully.${NC}"
+        else
+            echo -e "${RED}[✗] Failed to download buildx binary automatically.${NC}"
+        fi
+    fi
+}
+
 function run_local() {
     print_banner
     check_env_file
+    ensure_docker_buildx
 
     echo -e "${BOLD}${GREEN}▶ Launching Local Docker Environment...${NC}"
     echo -e "  - Frontend Dashboard: ${BOLD}http://localhost:5173${NC}"
@@ -80,9 +124,10 @@ function run_local() {
 
     export FRONTEND_PORT="${FRONTEND_PORT:-5173}"
     export BACKEND_PORT="${BACKEND_PORT:-8000}"
+    export DOZZLE_PORT="${DOZZLE_PORT:-8888}"
     export DOCKER_RESTART="unless-stopped"
 
-    docker compose -f docker-compose.yml up -d --build
+    log_cmd docker compose -f docker-compose.yml up -d --build
 
     echo ""
     echo -e "${GREEN}[✓] All services running locally!${NC}"
@@ -93,6 +138,7 @@ function run_local() {
 function run_aws() {
     print_banner
     check_env_file
+    ensure_docker_buildx
 
     echo -e "${BOLD}${YELLOW}▶ Launching AWS VM Production Environment...${NC}"
 
@@ -121,7 +167,7 @@ function run_aws() {
     echo -e "  - Container Restart:  always (Auto-recovery on VM reboot)"
     echo ""
 
-    docker compose -f docker-compose.yml -f docker-compose.aws.yml up -d --build
+    log_cmd docker compose -f docker-compose.yml -f docker-compose.aws.yml up -d --build
 
     echo ""
     echo -e "${GREEN}[✓] Successfully deployed on AWS VM!${NC}"
@@ -138,13 +184,13 @@ function run_aws() {
 function stop_all() {
     print_banner
     echo -e "${YELLOW}Stopping all containers...${NC}"
-    docker compose -f docker-compose.yml -f docker-compose.aws.yml down
+    log_cmd docker compose -f docker-compose.yml -f docker-compose.aws.yml down
     echo -e "${GREEN}[✓] All containers stopped.${NC}"
 }
 
 function show_status() {
     print_banner
-    docker compose ps
+    log_cmd docker compose ps
     echo ""
     echo -e "${BOLD}Health Check Probe:${NC}"
     curl -s http://localhost:8000/api/health || curl -s http://localhost:5173/api/health || echo "Could not reach health endpoint."
@@ -154,16 +200,16 @@ function show_status() {
 function show_logs() {
     local service="${1:-}"
     if [ -n "$service" ]; then
-        docker compose logs -f "$service"
+        log_cmd docker compose logs -f "$service"
     else
-        docker compose logs -f
+        log_cmd docker compose logs -f
     fi
 }
 
 function run_tests() {
     print_banner
     echo -e "${BOLD}${BLUE}Running unit and integration tests...${NC}"
-    uv run pytest tests/
+    log_cmd uv run pytest tests/
 }
 
 # ── Argument Parsing ─────────────────────────────────────────────────────────
