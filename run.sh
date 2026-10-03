@@ -86,7 +86,8 @@ function run_local() {
 
     echo ""
     echo -e "${GREEN}[✓] All services running locally!${NC}"
-    echo -e "    Open dashboard: ${BOLD}http://localhost:5173${NC}"
+    echo -e "    Open dashboard:     ${BOLD}http://localhost:5173${NC}"
+    echo -e "    Dozzle Live Logs:   ${BOLD}http://localhost:8888${NC}"
 }
 
 function run_aws() {
@@ -111,10 +112,12 @@ function run_aws() {
 
     export FRONTEND_PORT="${FRONTEND_PORT:-80}"
     export BACKEND_PORT="${BACKEND_PORT:-8000}"
+    export DOZZLE_PORT="${DOZZLE_PORT:-8888}"
     export DOCKER_RESTART="always"
 
     echo -e "  - Frontend Web Port:  ${BOLD}:${FRONTEND_PORT}${NC} (Standard HTTP for VM)"
     echo -e "  - FastAPI Backend:    ${BOLD}:${BACKEND_PORT}${NC}"
+    echo -e "  - Dozzle Log Viewer:  ${BOLD}:${DOZZLE_PORT}${NC}"
     echo -e "  - Container Restart:  always (Auto-recovery on VM reboot)"
     echo ""
 
@@ -124,9 +127,11 @@ function run_aws() {
     echo -e "${GREEN}[✓] Successfully deployed on AWS VM!${NC}"
     if [ -n "$aws_ip" ]; then
         echo -e "    Access Web Dashboard: ${BOLD}http://${aws_ip}${NC}"
+        echo -e "    Dozzle Live Logs:     ${BOLD}http://${aws_ip}:8888${NC}"
         echo -e "    API Health Check:     ${BOLD}http://${aws_ip}/api/health${NC}"
     else
         echo -e "    Access Web Dashboard: ${BOLD}http://<YOUR-AWS-VM-IP>${NC}"
+        echo -e "    Dozzle Live Logs:     ${BOLD}http://<YOUR-AWS-VM-IP>:8888${NC}"
     fi
 }
 

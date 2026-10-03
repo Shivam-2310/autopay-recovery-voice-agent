@@ -62,11 +62,12 @@ elif command -v apt-get &> /dev/null; then
     sudo systemctl enable --now docker
 
     if command -v ufw &> /dev/null && sudo ufw status | grep -q "Status: active"; then
-        echo "▶ Opening ports 80, 443, 8000, 22 in UFW..."
+        echo "▶ Opening ports 80, 443, 8000, 8888, 22 in UFW..."
         sudo ufw allow 22/tcp || true
         sudo ufw allow 80/tcp || true
         sudo ufw allow 443/tcp || true
         sudo ufw allow 8000/tcp || true
+        sudo ufw allow 8888/tcp || true
     fi
 else
     echo "❌ Error: Unsupported package manager. Please install Docker manually."
