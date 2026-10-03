@@ -184,7 +184,7 @@ function run_aws() {
 function stop_all() {
     print_banner
     echo -e "${YELLOW}Stopping all containers...${NC}"
-    log_cmd docker compose -f docker-compose.yml -f docker-compose.aws.yml down
+    log_cmd docker compose -f docker-compose.yml -f docker-compose.aws.yml down --remove-orphans
     echo -e "${GREEN}[✓] All containers stopped.${NC}"
 }
 
