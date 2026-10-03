@@ -53,10 +53,12 @@ from src.db import (
 from src.dial import check_call_window, dial_customer, load_customers, validate_demo_phone
 from src.sms import send_payment_link_sms
 
+from src.logging_config import setup_logging
+
 load_dotenv()
 
+setup_logging("backend")
 logger = logging.getLogger("api")
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 
 INTERNAL_SECRET = os.environ.get("INTERNAL_SECRET", "secret_internal_token_change_me")
 
@@ -433,6 +435,20 @@ def get_live_listen_token(call_id: str) -> dict[str, str]:
 @app.get("/api/metrics")
 def metrics() -> dict[str, Any]:
     return get_metrics()
+
+
+@app.get("/api/logs")
+def get_system_logs(service: str = "agent", lines: int = 200) -> dict[str, Any]:
+    """Read the last N lines from agent or backend log files."""
+    from src.logging_config import get_log_dir, read_logs
+
+    content = read_logs(service, max_lines=lines)
+    return {
+        "service": service,
+        "log_dir": str(get_log_dir()),
+        "lines": lines,
+        "content": content,
+    }
 
 
 @app.get("/api/voices")

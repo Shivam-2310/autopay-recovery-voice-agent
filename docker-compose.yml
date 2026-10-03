@@ -15,6 +15,7 @@ services:
       - "${BACKEND_PORT:-8000}:8000"
     volumes:
       - voice-agent-data:/app/data
+      - ./logs:/app/data/logs
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
       interval: 10s
@@ -33,9 +34,11 @@ services:
       - .env
     environment:
       - API_BASE_URL=http://backend:8000
+      - DATABASE_PATH=/app/data/outcomes.db
       - PYTHONUNBUFFERED=1
     volumes:
       - voice-agent-data:/app/data
+      - ./logs:/app/data/logs
     depends_on:
       backend:
         condition: service_healthy

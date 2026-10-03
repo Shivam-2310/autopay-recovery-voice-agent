@@ -44,18 +44,65 @@ from src.prompts import build_system_prompt
 from src.sanitizer import tts_sanitizer_transform
 from src.tools import CallState, make_tools
 
+from datetime import UTC, datetime
+from src.logging_config import setup_logging
+
 load_dotenv()
 
+setup_logging("agent")
 logger = logging.getLogger("agent")
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 
-API_BASE_URL = os.environ.get("API_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
+API_BASE_URL = os.environ.get("API_BASE_URL", "http://backend:8000").rstrip("/")
 INTERNAL_SECRET = os.environ.get("INTERNAL_SECRET", "secret_internal_token_change_me")
 
 
 def _post_internal_event(call_id: str, event_type: str, payload: dict[str, Any]) -> None:
-    """Send telemetry or turn event to FastAPI backend via internal endpoint."""
-    url = f"{API_BASE_URL}/internal/events"
+    """Send telemetry or turn event to FastAPI backend and guarantee direct DB persistence."""
+    ts = datetime.now(UTC).isoformat()
+
+    # 1. Direct SQLite database persistence (guaranteed immediate local storage)
+    try:
+        from src.db import add_event, add_turn, set_customer_dnd, update_call_record
+
+        if event_type == "turn":
+            speaker = payload.get("speaker", "agent")
+            text = payload.get("text", "")
+            is_final = payload.get("is_final", True)
+            add_turn(call_id=call_id, speaker=speaker, text=text, is_final=is_final, timestamp=ts)
+            logger.info("Persisted turn to DB: [%s] %s", speaker, text[:60])
+        else:
+            add_event(call_id=call_id, event_type=event_type, payload=payload, timestamp=ts)
+
+        if event_type == "state.update":
+            outcome = payload.get("terminal_outcome")
+            note = payload.get("outcome_note")
+            if outcome:
+                update_call_record(call_id=call_id, outcome=outcome, note=note)
+            if payload.get("do_not_call"):
+                cid = payload.get("customer_id")
+                if cid:
+                    set_customer_dnd(cid)
+
+        if event_type == "call.ended":
+            duration = payload.get("duration_sec", 0.0)
+            outcome = payload.get("final_outcome")
+            transcript = payload.get("transcript", "")
+            update_call_record(
+                call_id=call_id,
+                status="completed",
+                outcome=outcome,
+                duration_sec=duration,
+                transcript=transcript,
+            )
+    except Exception as db_err:
+        logger.error("Direct DB persist for event %s failed: %s", event_type, db_err)
+
+    # 2. Forward to FastAPI backend for live WebSocket dashboard broadcast
+    candidate_urls = [API_BASE_URL]
+    for fallback in ["http://backend:8000", "http://127.0.0.1:8000"]:
+        if fallback not in candidate_urls:
+            candidate_urls.append(fallback)
+
     headers = {
         "X-Internal-Secret": INTERNAL_SECRET,
         "Content-Type": "application/json",
@@ -64,13 +111,24 @@ def _post_internal_event(call_id: str, event_type: str, payload: dict[str, Any])
         "call_id": call_id,
         "event_type": event_type,
         "payload": payload,
+        "timestamp": ts,
     }
-    try:
-        resp = requests.post(url, json=body, headers=headers, timeout=2.0)
-        if resp.status_code != 200:
-            logger.debug("Internal event %s returned HTTP %s", event_type, resp.status_code)
-    except Exception as e:
-        logger.debug("Failed to post internal event %s: %s", event_type, e)
+
+    posted = False
+    for base in candidate_urls:
+        url = f"{base}/internal/events"
+        try:
+            resp = requests.post(url, json=body, headers=headers, timeout=2.0)
+            if resp.status_code == 200:
+                posted = True
+                break
+            else:
+                logger.warning("Internal event %s to %s returned HTTP %s", event_type, url, resp.status_code)
+        except Exception as e:
+            logger.debug("Failed connecting to %s for event %s: %s", url, event_type, e)
+
+    if not posted:
+        logger.warning("Could not reach backend via HTTP for event %s (saved to SQLite directly)", event_type)
 
 
 def _send_sms_via_api(
@@ -80,8 +138,12 @@ def _send_sms_via_api(
     amount: float,
     phone_number: str | None = None,
 ) -> dict[str, Any]:
-    """Request FastAPI backend to dispatch payment link SMS, falling back to direct dispatch if API is down."""
-    url = f"{API_BASE_URL}/internal/sms"
+    """Request FastAPI backend to dispatch payment link SMS, falling back to direct dispatch."""
+    candidate_urls = [API_BASE_URL]
+    for fallback in ["http://backend:8000", "http://127.0.0.1:8000"]:
+        if fallback not in candidate_urls:
+            candidate_urls.append(fallback)
+
     headers = {
         "X-Internal-Secret": INTERNAL_SECRET,
         "Content-Type": "application/json",
@@ -93,18 +155,25 @@ def _send_sms_via_api(
         "amount": amount,
         "phone_number": phone_number,
     }
-    try:
-        resp = requests.post(url, json=body, headers=headers, timeout=5.0)
-        if resp.status_code == 200:
-            return resp.json()
-        logger.warning("Internal SMS dispatch returned HTTP %s: %s", resp.status_code, resp.text)
-    except Exception as e:
-        logger.info("Internal SMS endpoint unreachable (%s), falling back to in-process dispatch", e)
+
+    for base in candidate_urls:
+        url = f"{base}/internal/sms"
+        try:
+            resp = requests.post(url, json=body, headers=headers, timeout=5.0)
+            if resp.status_code == 200:
+                logger.info("Internal SMS dispatched via %s: %s", url, resp.json())
+                return resp.json()
+            logger.warning("Internal SMS dispatch to %s returned HTTP %s: %s", url, resp.status_code, resp.text)
+        except Exception as e:
+            logger.debug("Internal SMS endpoint %s unreachable: %s", url, e)
 
     # In-process direct fallback using send_payment_link_sms_sync
+    logger.info("Internal SMS endpoint unreachable, falling back to direct in-process Twilio dispatch")
     try:
         from src.sms import send_payment_link_sms_sync
-        return send_payment_link_sms_sync(call_id, customer_id, first_name, amount, to_phone=phone_number)
+        result = send_payment_link_sms_sync(call_id, customer_id, first_name, amount, to_phone=phone_number)
+        logger.info("Direct in-process SMS dispatch result: %s", result)
+        return result
     except Exception as direct_err:
         logger.error("In-process SMS dispatch failed: %s", direct_err)
         return {"status": "error", "error": str(direct_err)}
@@ -332,6 +401,22 @@ async def entrypoint(ctx: JobContext) -> None:
     call_id = ctx.room.name or f"call-{customer['id']}"
     logger.info("Initializing call session %s for customer: %s (%s)", call_id, customer["id"], customer.get("name", "Unknown"))
 
+    # Ensure call record exists in SQLite immediately so foreign keys and detail views work
+    try:
+        from src.db import create_call_record
+
+        create_call_record(
+            call_id=call_id,
+            customer_id=customer["id"],
+            room_name=call_id,
+            source="live",
+            voice_id=os.environ.get("ELEVEN_VOICE_ID", "TX3LPaxmHKxFdv7VOQHJ"),
+            llm_provider=os.environ.get("LLM_PROVIDER", "groq"),
+        )
+        logger.info("Verified call record exists in database for %s", call_id)
+    except Exception as db_init_err:
+        logger.warning("Could not pre-create call record in SQLite: %s", db_init_err)
+
     call_state = CallState(
         customer_id=customer["id"],
         customer_record=customer,
@@ -402,6 +487,7 @@ async def entrypoint(ctx: JobContext) -> None:
         """Fires on every STT transcript. We forward final transcripts."""
         transcript = getattr(ev, "transcript", "")
         is_final = getattr(ev, "is_final", False)
+        logger.info("Deepgram STT transcription event: is_final=%s transcript='%s'", is_final, transcript)
         if not transcript or not is_final:
             return
         record_turn("customer", transcript)
@@ -425,6 +511,7 @@ async def entrypoint(ctx: JobContext) -> None:
             else:
                 text = str(content) if content else ""
 
+        logger.info("Conversation item committed: role=%s text='%s'", role, text)
         if not text or not text.strip():
             return
 

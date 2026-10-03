@@ -168,17 +168,21 @@ def make_tools(
         Returns:
             Confirmation of SMS delivery request.
         """
-        logger.info("Tool: send_payment_link called for customer %s", state.customer_id)
+        logger.info("Tool: send_payment_link called for customer %s (verified=%s)", state.customer_id, state.verified)
         if not state.verified:
+            logger.warning("Tool: send_payment_link BLOCKED for customer %s - identity not verified", state.customer_id)
             return "[INTERNAL ERROR: Identity is not verified. You must verify identity with birth year first.]"
         if state.is_terminal():
+            logger.info("Tool: send_payment_link ignored - call outcome already finalized (%s)", state.terminal_outcome)
             return "[INTERNAL STATUS: Call outcome is already finalized.]"
 
         # Guardrail 10: Truth in delivery
         if send_sms_fn:
             amt = float(state.customer_record.get("amount_due", 0.0))
             fname = state.customer_record.get("first_name") or state.customer_record.get("name", "").split()[0]
+            logger.info("Tool: dispatching SMS to customer %s (name=%s, amount=%.2f)", state.customer_id, fname, amt)
             sms_res = send_sms_fn(state.customer_id, fname, amt)
+            logger.info("Tool: SMS dispatch response for %s: %s", state.customer_id, sms_res)
             if sms_res.get("status") != "success":
                 state.terminal_outcome = None
                 state.sms_sent = False
@@ -189,6 +193,7 @@ def make_tools(
                     "action": "offer_callback_on_sms_failure",
                     "error": sms_res.get("error", "SMS dispatch failed"),
                 })
+                logger.error("Tool: send_payment_link dispatch error: %s", sms_res.get("error"))
                 return "[INTERNAL ERROR: SMS delivery failed due to network error.]"
 
         state.offers_made += 1
