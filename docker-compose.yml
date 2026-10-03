@@ -2,7 +2,7 @@ services:
   backend:
     build:
       context: .
-      dockerfile: Dockerfile.backend
+      dockerfile: docker/Dockerfile.backend
     image: voice-agent-backend:latest
     container_name: voice-agent-backend
     env_file:
@@ -25,7 +25,7 @@ services:
   agent:
     build:
       context: .
-      dockerfile: Dockerfile.agent
+      dockerfile: docker/Dockerfile.agent
     image: voice-agent-agent:latest
     container_name: voice-agent-agent
     env_file:
@@ -41,7 +41,7 @@ services:
   frontend:
     build:
       context: .
-      dockerfile: Dockerfile.frontend
+      dockerfile: docker/Dockerfile.frontend
     image: voice-agent-frontend:latest
     container_name: voice-agent-frontend
     ports:
