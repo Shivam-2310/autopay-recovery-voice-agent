@@ -9,6 +9,7 @@ interface HeaderProps {
   activeTab: 'overview' | 'live' | 'messages' | 'history';
   setActiveTab: (tab: 'overview' | 'live' | 'messages' | 'history') => void;
   hasActiveCall: boolean;
+  targetPhone?: string;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -17,6 +18,7 @@ export const Header: React.FC<HeaderProps> = ({
   activeTab,
   setActiveTab,
   hasActiveCall,
+  targetPhone,
 }) => {
   const getStatusColor = () => {
     switch (wsStatus) {
@@ -28,6 +30,8 @@ export const Header: React.FC<HeaderProps> = ({
     }
   };
 
+  const isCustomPhone = Boolean(targetPhone && config?.demo_phone && targetPhone !== config.demo_phone);
+
   return (
     <header className="bg-slate-900 border-b border-slate-800 sticky top-0 z-40">
       {/* Top Demo Banner */}
@@ -35,10 +39,18 @@ export const Header: React.FC<HeaderProps> = ({
         <div className="flex items-center gap-2">
           <span className="flex items-center gap-1 font-semibold text-amber-400 bg-amber-950/60 px-2 py-0.5 rounded border border-amber-800/40">
             <AlertTriangle className="w-3.5 h-3.5" />
-            DEMO MODE SAFETY LOCK
+            TELEPHONY TEST ROUTING
           </span>
           <span className="text-slate-400">
-            Calls & SMS restricted strictly to <strong className="text-slate-200">{config?.demo_phone_masked || '+91XXXXXX1234'}</strong>
+            Active Call & SMS target:{' '}
+            <strong className="text-sky-300 font-mono font-bold">
+              {targetPhone || config?.demo_phone || config?.demo_phone_masked || '+91XXXXXXXXXX'}
+            </strong>
+            {isCustomPhone && (
+              <span className="ml-1.5 bg-purple-900/60 text-purple-300 px-1.5 py-0.5 rounded text-[10px] border border-purple-700/50">
+                Custom Phone Active
+              </span>
+            )}
           </span>
         </div>
 

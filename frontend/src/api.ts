@@ -32,15 +32,28 @@ export async function fetchMetrics(): Promise<Metrics> {
   return res.json();
 }
 
-export async function triggerCall(customerId: string): Promise<{ call_id: string; room_name: string; status: string }> {
+export async function triggerCall(customerId: string, phoneNumber?: string): Promise<{ call_id: string; room_name: string; status: string; target_phone_masked?: string }> {
   const res = await fetch(`${BASE_URL}/api/calls`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ customer_id: customerId }),
+    body: JSON.stringify({ customer_id: customerId, phone_number: phoneNumber || undefined }),
   });
   if (!res.ok) {
     const errorData = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(errorData.detail || 'Failed to dispatch call');
+  }
+  return res.json();
+}
+
+export async function updateDefaultPhone(phoneNumber: string): Promise<{ status: string; demo_phone: string; demo_phone_masked: string }> {
+  const res = await fetch(`${BASE_URL}/api/config/phone`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ phone_number: phoneNumber }),
+  });
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(errorData.detail || 'Failed to update phone number');
   }
   return res.json();
 }

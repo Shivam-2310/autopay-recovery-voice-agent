@@ -122,6 +122,11 @@ app.add_middleware(
 # ── Pydantic Request Models ───────────────────────────────────────────────────
 class CallRequest(BaseModel):
     customer_id: str
+    phone_number: str | None = None
+
+
+class UpdatePhoneRequest(BaseModel):
+    phone_number: str
 
 
 class BatchCallRequest(BaseModel):
@@ -141,6 +146,7 @@ class InternalSmsRequest(BaseModel):
     customer_id: str
     first_name: str
     amount: float
+    phone_number: str | None = None
 
 
 # ── Security Dependency ───────────────────────────────────────────────────────
@@ -163,6 +169,7 @@ def get_config() -> dict[str, Any]:
     in_window, window_reason = check_call_window(demo_override=demo_override)
 
     return {
+        "demo_phone": demo_phone,
         "demo_phone_masked": mask_phone_number(demo_phone),
         "demo_override": demo_override,
         "in_call_window": in_window,
@@ -174,6 +181,22 @@ def get_config() -> dict[str, Any]:
     }
 
 
+@app.post("/api/config/phone")
+def update_demo_phone(req: UpdatePhoneRequest) -> dict[str, Any]:
+    from src.dial import normalize_phone_number
+    try:
+        clean = normalize_phone_number(req.phone_number)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    os.environ["DEMO_PHONE"] = clean
+    logger.info("Updated default DEMO_PHONE to: %s", mask_phone_number(clean))
+    return {
+        "status": "ok",
+        "demo_phone": clean,
+        "demo_phone_masked": mask_phone_number(clean),
+    }
+
+
 # ── Customer Data ─────────────────────────────────────────────────────────────
 @app.get("/api/customers")
 def list_customers() -> list[dict[str, Any]]:
@@ -182,8 +205,16 @@ def list_customers() -> list[dict[str, Any]]:
 
 
 # ── Call Dispatch Endpoints ───────────────────────────────────────────────────
-async def _execute_single_call(customer_id: str) -> dict[str, Any]:
-    demo_phone = validate_demo_phone(os.environ.get("DEMO_PHONE"))
+async def _execute_single_call(customer_id: str, custom_phone: str | None = None) -> dict[str, Any]:
+    from src.dial import normalize_phone_number
+    if custom_phone:
+        try:
+            demo_phone = normalize_phone_number(custom_phone)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+    else:
+        demo_phone = validate_demo_phone(os.environ.get("DEMO_PHONE"))
+
     demo_override = os.environ.get("DEMO_OVERRIDE", "").lower() in ("true", "1", "yes")
 
     customers = load_customers()
@@ -238,10 +269,16 @@ async def _execute_single_call(customer_id: str) -> dict[str, Any]:
             "call_id": call_id,
             "customer_id": customer_id,
             "status": "active",
+            "target_phone_masked": mask_phone_number(demo_phone),
             "timestamp": datetime.now(UTC).isoformat(),
         })
 
-        return {"call_id": call_id, "room_name": room_name, "status": "active"}
+        return {
+            "call_id": call_id,
+            "room_name": room_name,
+            "status": "active",
+            "target_phone_masked": mask_phone_number(demo_phone),
+        }
 
     finally:
         await lkapi.aclose()
@@ -249,7 +286,7 @@ async def _execute_single_call(customer_id: str) -> dict[str, Any]:
 
 @app.post("/api/calls")
 async def trigger_call(req: CallRequest) -> dict[str, Any]:
-    return await _execute_single_call(req.customer_id)
+    return await _execute_single_call(req.customer_id, custom_phone=req.phone_number)
 
 
 @app.post("/api/calls/batch")
@@ -570,6 +607,7 @@ async def dispatch_worker_sms(
         customer_id=req.customer_id,
         first_name=req.first_name,
         amount=req.amount,
+        to_phone=req.phone_number,
     )
     # Broadcast to dashboard
     await ws_manager.broadcast({

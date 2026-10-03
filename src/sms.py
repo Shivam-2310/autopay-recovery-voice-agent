@@ -44,8 +44,9 @@ async def send_payment_link_sms(
     customer_id: str,
     first_name: str,
     amount: float,
+    to_phone: str | None = None,
 ) -> dict[str, Any]:
-    """Send payment link via Twilio SMS strictly to DEMO_PHONE loaded from .env.
+    """Send payment link via Twilio SMS to destination phone (or DEMO_PHONE from .env).
 
     SAFETY & COMPLIANCE:
     Customer destination phone (DEMO_PHONE) and Twilio sender/service credentials
@@ -54,8 +55,12 @@ async def send_payment_link_sms(
     Dispatches directly via Twilio Messages API using MessagingServiceSid or From caller ID,
     using HTTP Basic Authentication, with a clean compliant body.
     """
-    raw_demo = os.environ.get("DEMO_PHONE")
-    demo_phone = validate_demo_phone(raw_demo)
+    if to_phone:
+        from src.dial import normalize_phone_number
+        demo_phone = normalize_phone_number(to_phone)
+    else:
+        raw_demo = os.environ.get("DEMO_PHONE")
+        demo_phone = validate_demo_phone(raw_demo)
     masked_to = mask_phone_number(demo_phone)
     sms_mode = os.environ.get("SMS_MODE", "twilio").lower()
     public_base_url = os.environ.get("PUBLIC_BASE_URL", "http://localhost:8000").rstrip("/")
@@ -262,6 +267,7 @@ def send_payment_link_sms_sync(
     customer_id: str,
     first_name: str,
     amount: float,
+    to_phone: str | None = None,
 ) -> dict[str, Any]:
     """Synchronous version of send_payment_link_sms for in-process agent worker callers.
 
@@ -270,8 +276,12 @@ def send_payment_link_sms_sync(
     are strictly loaded from .env and never hardcoded in application logic.
     Dispatches directly via Twilio Messages API using MessagingServiceSid or From caller ID.
     """
-    raw_demo = os.environ.get("DEMO_PHONE")
-    demo_phone = validate_demo_phone(raw_demo)
+    if to_phone:
+        from src.dial import normalize_phone_number
+        demo_phone = normalize_phone_number(to_phone)
+    else:
+        raw_demo = os.environ.get("DEMO_PHONE")
+        demo_phone = validate_demo_phone(raw_demo)
     masked_to = mask_phone_number(demo_phone)
     sms_mode = os.environ.get("SMS_MODE", "twilio").lower()
     public_base_url = os.environ.get("PUBLIC_BASE_URL", "http://localhost:8000").rstrip("/")

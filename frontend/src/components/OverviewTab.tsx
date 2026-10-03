@@ -12,6 +12,10 @@ import {
   Square,
   ShieldAlert,
   Loader2,
+  Smartphone,
+  RotateCcw,
+  Save,
+  Check,
 } from 'lucide-react';
 import type { Customer, Metrics, BatchProgress } from '../types';
 
@@ -20,9 +24,14 @@ interface OverviewTabProps {
   customers: Customer[];
   activeCallId: string | null;
   batchProgress: BatchProgress | null;
-  onCallCustomer: (customerId: string) => Promise<void>;
+  onCallCustomer: (customerId: string, phoneOverride?: string) => Promise<void>;
   onTriggerBatch: () => Promise<void>;
   onCancelBatch: () => Promise<void>;
+  targetPhone: string;
+  defaultPhone?: string;
+  onTargetPhoneChange: (phone: string) => void;
+  onResetTargetPhone: () => void;
+  onSaveDefaultPhone?: (phone: string) => Promise<void>;
 }
 
 export const OverviewTab: React.FC<OverviewTabProps> = ({
@@ -33,16 +42,37 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
   onCallCustomer,
   onTriggerBatch,
   onCancelBatch,
+  targetPhone,
+  defaultPhone,
+  onTargetPhoneChange,
+  onResetTargetPhone,
+  onSaveDefaultPhone,
 }) => {
   const [dialingId, setDialingId] = useState<string | null>(null);
   const [batchLoading, setBatchLoading] = useState(false);
+  const [isSavingPhone, setIsSavingPhone] = useState(false);
+  const [saveSuccess, setSaveSuccess] = useState(false);
 
   const handleSingleCall = async (cid: string) => {
     setDialingId(cid);
     try {
-      await onCallCustomer(cid);
+      await onCallCustomer(cid, targetPhone);
     } finally {
       setDialingId(null);
+    }
+  };
+
+  const handleSavePhone = async () => {
+    if (!onSaveDefaultPhone || !targetPhone) return;
+    setIsSavingPhone(true);
+    try {
+      await onSaveDefaultPhone(targetPhone);
+      setSaveSuccess(true);
+      setTimeout(() => setSaveSuccess(false), 2500);
+    } catch (e: any) {
+      alert(`Could not save default phone: ${e.message}`);
+    } finally {
+      setIsSavingPhone(false);
     }
   };
 
@@ -165,6 +195,78 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
         </div>
       </div>
 
+      {/* ── Live Phone Testing Destination Panel ── */}
+      <div className="bg-gradient-to-r from-slate-900 via-slate-900 to-sky-950/40 border border-slate-800 rounded-xl p-4 shadow-lg">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+          <div className="flex items-start gap-3">
+            <div className="w-10 h-10 rounded-lg bg-sky-500/10 border border-sky-500/30 flex items-center justify-center shrink-0 mt-0.5">
+              <Smartphone className="w-5 h-5 text-sky-400" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-semibold text-white">Live Phone Testing Destination</h3>
+                {targetPhone && defaultPhone && targetPhone !== defaultPhone ? (
+                  <span className="bg-purple-950 text-purple-300 border border-purple-800/60 text-[10px] px-2 py-0.5 rounded-full font-medium">
+                    Custom Tester Number
+                  </span>
+                ) : (
+                  <span className="bg-emerald-950 text-emerald-300 border border-emerald-800/60 text-[10px] px-2 py-0.5 rounded-full font-medium">
+                    Default (Your Phone)
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-slate-400 mt-0.5">
+                All outbound recovery calls & SMS payment links route to this phone so anyone evaluating can test the AI agent live on their own device.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative">
+              <Phone className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                value={targetPhone}
+                onChange={(e) => onTargetPhoneChange(e.target.value)}
+                placeholder="+91XXXXXXXXXX or 10 digits"
+                className="bg-slate-950 border border-slate-700 focus:border-sky-500 focus:ring-1 focus:ring-sky-500 rounded-lg pl-8 pr-3 py-1.5 text-xs text-white font-mono placeholder:text-slate-600 w-52 transition"
+              />
+            </div>
+
+            {defaultPhone && targetPhone !== defaultPhone && (
+              <button
+                onClick={onResetTargetPhone}
+                className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 px-2.5 py-1.5 rounded-lg border border-slate-700 transition flex items-center gap-1"
+                title="Reset to default phone from server .env"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                Reset
+              </button>
+            )}
+
+            {onSaveDefaultPhone && (
+              <button
+                onClick={handleSavePhone}
+                disabled={isSavingPhone || !targetPhone}
+                className="text-xs bg-sky-600/20 hover:bg-sky-600/30 text-sky-300 border border-sky-500/30 px-3 py-1.5 rounded-lg font-medium transition flex items-center gap-1.5 disabled:opacity-50"
+              >
+                {saveSuccess ? (
+                  <>
+                    <Check className="w-3.5 h-3.5 text-emerald-400" />
+                    <span className="text-emerald-300">Saved</span>
+                  </>
+                ) : (
+                  <>
+                    <Save className="w-3.5 h-3.5" />
+                    Set Default
+                  </>
+                )}
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
       {/* ── Batch Queue Manager ── */}
       <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-col md:flex-row items-center justify-between gap-4">
         <div>
@@ -173,7 +275,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
             <span className="text-xs font-normal text-slate-400">(Dial each candidate customer in sequence with 5s delay)</span>
           </h3>
           <p className="text-xs text-slate-400 mt-0.5">
-            Safely routes one outbound call at a time to DEMO_PHONE with automated state transitions.
+            Safely routes one outbound call at a time to {targetPhone || defaultPhone || 'DEMO_PHONE'} with automated state transitions.
           </p>
         </div>
 

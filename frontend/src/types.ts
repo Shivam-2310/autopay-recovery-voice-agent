@@ -1,4 +1,5 @@
 export interface SystemConfig {
+  demo_phone?: string;
   demo_phone_masked: string;
   demo_override: boolean;
   in_call_window: boolean;

@@ -45,16 +45,36 @@ DEFAULT_WINDOW_START_HOUR = int(os.environ.get("CALL_WINDOW_START_HOUR", "9"))
 DEFAULT_WINDOW_END_HOUR = int(os.environ.get("CALL_WINDOW_END_HOUR", "20"))
 
 
-def validate_demo_phone(phone: str | None) -> str:
-    """Validate that DEMO_PHONE exists and matches strict E.164 format.
+def normalize_phone_number(phone: str | None) -> str:
+    """Normalize and validate a user-entered phone number into strict E.164 format.
 
-    SAFETY & COMPLIANCE:
-    Neither customer phone numbers nor Twilio sender numbers are ever hardcoded in the codebase.
-    They are picked strictly from environment variables (.env).
-    All outbound calls and SMS messages route strictly and exclusively to DEMO_PHONE.
-    If a 10-digit Indian mobile number is provided without '+' prefix, it is automatically
-    normalized to E.164 format (+91XXXXXXXXXX).
+    Accepts:
+      - 10-digit Indian numbers (e.g. '9876543210' -> '+919876543210')
+      - Formatted strings with dashes/spaces (e.g. '+91 98765-43210' -> '+919876543210')
+      - Strict E.164 numbers (e.g. '+919876543210', '+15550199999')
+
+    Raises:
+      ValueError if phone is empty or invalid.
     """
+    if not phone or not str(phone).strip():
+        raise ValueError("Phone number cannot be empty.")
+
+    clean = re.sub(r"[\s\-\(\)]", "", str(phone).strip())
+    if re.match(r"^[6-9]\d{9}$", clean):
+        clean = f"+91{clean}"
+    elif re.match(r"^91[6-9]\d{9}$", clean):
+        clean = f"+{clean}"
+
+    if not re.match(r"^\+[1-9]\d{1,14}$", clean):
+        raise ValueError(
+            f"'{phone}' is not a valid phone number. Provide a 10-digit mobile number or format with country code (e.g. +91XXXXXXXXXX)."
+        )
+
+    return clean
+
+
+def validate_demo_phone(phone: str | None) -> str:
+    """Validate that DEMO_PHONE exists and matches strict E.164 format."""
     if not phone:
         logger.error(
             "FATAL: DEMO_PHONE is not set in environment (.env). "
@@ -63,7 +83,6 @@ def validate_demo_phone(phone: str | None) -> str:
         sys.exit(1)
 
     phone_clean = phone.strip()
-    # Normalize 10-digit Indian mobile numbers (e.g., 9876543210 -> +919876543210)
     if re.match(r"^[6-9]\d{9}$", phone_clean):
         phone_clean = f"+91{phone_clean}"
 
@@ -185,8 +204,8 @@ async def dial_customer(
     # 2. Record dial start in customer state
     record_dial_attempt(cid, outcome="calling")
 
-    # 3. Explicitly create room with metadata = {"customer_id": cid} only
-    metadata_json = json.dumps({"customer_id": cid})
+    # 3. Explicitly create room with metadata = {"customer_id": cid, "phone_number": demo_phone}
+    metadata_json = json.dumps({"customer_id": cid, "phone_number": demo_phone})
     await lkapi.room.create_room(
         api.CreateRoomRequest(
             name=room_name,
@@ -195,7 +214,7 @@ async def dial_customer(
         )
     )
 
-    # 4. Dispatch the agent worker to the room with metadata = {"customer_id": cid} only
+    # 4. Dispatch the agent worker to the room with metadata
     await lkapi.agent_dispatch.create_dispatch(
         api.CreateAgentDispatchRequest(
             agent_name=AGENT_NAME,

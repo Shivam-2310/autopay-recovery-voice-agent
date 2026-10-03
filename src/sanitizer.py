@@ -34,6 +34,8 @@ _RUPEES_CURRENCY_RE = re.compile(r"(?:₹|rs\.?|inr)\s*(\d+(?:,\d+)*(?:\.\d+)?)"
 
 # Patterns for internal meta-instructions or tool return leakage
 _INTERNAL_JSON_RE = re.compile(r"\{[^{}]*\"status\"[^{}]*\}", re.DOTALL)
+_INTERNAL_BRACKET_RE = re.compile(r"\[INTERNAL[^\]]*\]\s*", re.IGNORECASE)
+_ACCOUNT_DATA_PREAMBLE_RE = re.compile(r"Account data:\s*Autopay payment of[^.]*\.\s*", re.IGNORECASE)
 _INTERNAL_LEAKAGE_RE = re.compile(
     r"(?:The payment link has been dispatched to the customer's registered phone number via SMS\.?|"
     r"Inform them that the link is valid for 24 hours[^.]*\.?|"
@@ -55,8 +57,10 @@ def sanitize_tts_text(text: str) -> str:
 
     cleaned = text
 
-    # Strip raw JSON tool returns or internal status strings
+    # Strip raw JSON tool returns, bracketed internal statuses, or account data preambles
     cleaned = _INTERNAL_JSON_RE.sub("", cleaned)
+    cleaned = _INTERNAL_BRACKET_RE.sub("", cleaned)
+    cleaned = _ACCOUNT_DATA_PREAMBLE_RE.sub("", cleaned)
     cleaned = _INTERNAL_LEAKAGE_RE.sub("", cleaned)
 
     # 1. Remove speaker labels (e.g. 'Agent: ', 'AI: ')
@@ -103,12 +107,27 @@ def sanitize_tts_text(text: str) -> str:
 
 
 async def tts_sanitizer_transform(stream: AsyncIterable[str]) -> AsyncGenerator[str, None]:
-    """Streaming text transform callable compatible with LiveKit AgentSession `tts_text_transforms`."""
+    """Streaming text transform callable compatible with LiveKit AgentSession `tts_text_transforms`.
+
+    Optimized for ultra-low latency: yields on sentence boundaries (. ! ? \n)
+    AND on natural clause boundaries (, ; :) once at least 3 words have accumulated,
+    allowing ElevenLabs to synthesize and speak the beginning of sentences without waiting
+    for the entire multi-clause generation to complete.
+    """
     buffer = ""
     async for chunk in stream:
         buffer += chunk
-        # If chunk contains a sentence boundary, sanitize and yield the completed sentence
+        should_yield = False
+
         if any(punct in chunk for punct in (".", "!", "?", "\n")):
+            should_yield = True
+        elif any(punct in chunk for punct in (",", ";", ":")):
+            # Only split on comma/semicolon if at least 3 words have accumulated and not inside a number (e.g. 2,499)
+            words = buffer.strip().split()
+            if len(words) >= 3 and not re.search(r"\d,\d*$", buffer):
+                should_yield = True
+
+        if should_yield:
             sanitized = sanitize_tts_text(buffer)
             if sanitized:
                 yield sanitized + " "

@@ -24,7 +24,9 @@ from livekit.agents import Agent, AgentSession, JobContext
 from livekit.plugins import deepgram, elevenlabs, silero
 from livekit.plugins import langchain as lk_langchain
 
+import re
 import requests
+from langchain_core.messages import ToolMessage, ToolMessageChunk
 
 from src.graph import build_graph
 from src.guardrails import (
@@ -71,7 +73,13 @@ def _post_internal_event(call_id: str, event_type: str, payload: dict[str, Any])
         logger.debug("Failed to post internal event %s: %s", event_type, e)
 
 
-def _send_sms_via_api(call_id: str, customer_id: str, first_name: str, amount: float) -> dict[str, Any]:
+def _send_sms_via_api(
+    call_id: str,
+    customer_id: str,
+    first_name: str,
+    amount: float,
+    phone_number: str | None = None,
+) -> dict[str, Any]:
     """Request FastAPI backend to dispatch payment link SMS, falling back to direct dispatch if API is down."""
     url = f"{API_BASE_URL}/internal/sms"
     headers = {
@@ -83,6 +91,7 @@ def _send_sms_via_api(call_id: str, customer_id: str, first_name: str, amount: f
         "customer_id": customer_id,
         "first_name": first_name,
         "amount": amount,
+        "phone_number": phone_number,
     }
     try:
         resp = requests.post(url, json=body, headers=headers, timeout=5.0)
@@ -95,7 +104,7 @@ def _send_sms_via_api(call_id: str, customer_id: str, first_name: str, amount: f
     # In-process direct fallback using send_payment_link_sms_sync
     try:
         from src.sms import send_payment_link_sms_sync
-        return send_payment_link_sms_sync(call_id, customer_id, first_name, amount)
+        return send_payment_link_sms_sync(call_id, customer_id, first_name, amount, to_phone=phone_number)
     except Exception as direct_err:
         logger.error("In-process SMS dispatch failed: %s", direct_err)
         return {"status": "error", "error": str(direct_err)}
@@ -113,18 +122,79 @@ def prewarm(proc: agents.JobProcess) -> None:
     logger.info("Worker pre-warmed successfully.")
 
 
+class SafeLangGraphStream(lk_langchain.langgraph.LangGraphStream):
+    """Filters out ToolMessages and non-chatbot nodes so internal tool returns are never streamed as spoken assistant chunks."""
+
+    async def _run(self) -> None:
+        state = self._chat_ctx_to_state()
+        try:
+            aiter = self._graph.astream(
+                state,
+                self._config,
+                context=self._context,
+                stream_mode=self._stream_mode,
+                subgraphs=self._subgraphs,
+            )
+        except TypeError:
+            aiter = self._graph.astream(
+                state,
+                self._config,
+                stream_mode=self._stream_mode,
+            )
+
+        async for item in aiter:
+            if isinstance(item, tuple) and len(item) == 2:
+                token, meta = item
+                # NEVER yield tool messages or chunks from the tools node as assistant speech!
+                if isinstance(token, (ToolMessage, ToolMessageChunk)) or getattr(token, "type", None) == "tool":
+                    continue
+                if isinstance(meta, dict) and meta.get("langgraph_node") == "tools":
+                    continue
+                token_like = lk_langchain.langgraph._extract_message_chunk(item)
+                if token_like is None or isinstance(token_like, (ToolMessage, ToolMessageChunk)) or getattr(token_like, "type", None) == "tool":
+                    continue
+                chat_chunk = lk_langchain.langgraph._to_chat_chunk(token_like)
+                if chat_chunk:
+                    self._event_ch.send_nowait(chat_chunk)
+            else:
+                token_like = lk_langchain.langgraph._extract_message_chunk(item)
+                if token_like is None or isinstance(token_like, (ToolMessage, ToolMessageChunk)) or getattr(token_like, "type", None) == "tool":
+                    continue
+                chat_chunk = lk_langchain.langgraph._to_chat_chunk(token_like)
+                if chat_chunk:
+                    self._event_ch.send_nowait(chat_chunk)
+
+
+class SafeLLMAdapter(lk_langchain.LLMAdapter):
+    """LangGraph LLMAdapter that uses SafeLangGraphStream to completely isolate tool outputs from spoken speech."""
+
+    def chat(self, *, chat_ctx, tools=None, conn_options=None, **kwargs):
+        return SafeLangGraphStream(
+            self,
+            chat_ctx=chat_ctx,
+            tools=tools or [],
+            graph=self._graph,
+            conn_options=conn_options or lk_langchain.langgraph.DEFAULT_API_CONNECT_OPTIONS,
+            config=self._config,
+            context=self._context,
+            subgraphs=self._subgraphs,
+            stream_mode=self._stream_mode,
+        )
+
+
 def _build_session(
     customer: dict,
     state: CallState,
     emit_fn: Any = None,
     vad: Any | None = None,
+    phone_number: str | None = None,
 ) -> tuple[AgentSession, Agent]:
     """Construct an AgentSession and Agent for a single call."""
     llm = get_llm_with_fallbacks()
     tools = make_tools(
         state,
         emit_event_fn=emit_fn,
-        send_sms_fn=lambda cid, fname, amt: _send_sms_via_api(state.call_id, cid, fname, amt),
+        send_sms_fn=lambda cid, fname, amt: _send_sms_via_api(state.call_id, cid, fname, amt, phone_number=phone_number),
     )
     graph = build_graph(llm=llm, tools=tools)
 
@@ -138,9 +208,9 @@ def _build_session(
     style = float(os.environ.get("ELEVEN_STYLE", "0.0"))
     speed = float(os.environ.get("ELEVEN_SPEED", "1.0"))
 
-    # 2. Deepgram STT with tuned endpointing for phone turn-taking (350ms default)
+    # 2. Deepgram STT with tuned endpointing for snappy phone turn-taking (300ms default)
     dg_model = os.environ.get("DEEPGRAM_MODEL", "nova-3")
-    dg_endpointing = int(os.environ.get("DEEPGRAM_ENDPOINTING_MS", "350"))
+    dg_endpointing = int(os.environ.get("DEEPGRAM_ENDPOINTING_MS", "300"))
 
     if vad is None:
         vad = silero.VAD.load()
@@ -150,7 +220,7 @@ def _build_session(
             model=dg_model,
             endpointing_ms=dg_endpointing,
         ),
-        llm=lk_langchain.LLMAdapter(graph=graph),
+        llm=SafeLLMAdapter(graph=graph),
         tts=elevenlabs.TTS(
             model=eleven_model,
             voice_id=eleven_voice,
@@ -239,7 +309,8 @@ async def entrypoint(ctx: JobContext) -> None:
         _post_internal_event(call_id, event_type, payload)
 
     vad = ctx.proc.userdata.get("vad")
-    session, agent = _build_session(customer, call_state, emit_fn=_on_event, vad=vad)
+    target_phone = metadata_dict.get("phone_number")
+    session, agent = _build_session(customer, call_state, emit_fn=_on_event, vad=vad, phone_number=target_phone)
 
     transcript_lines: list[str] = []
     seen_turns: set[str] = set()
@@ -248,6 +319,10 @@ async def entrypoint(ctx: JobContext) -> None:
     def record_turn(speaker: str, text: str) -> None:
         """Unified turn recording with deduplication and guardrail checking."""
         clean_text = (text or "").strip()
+        if speaker == "agent":
+            clean_text = re.sub(r"\[INTERNAL[^\]]*\]\s*", "", clean_text)
+            clean_text = re.sub(r"Account data:\s*Autopay payment of[^.]*\.\s*", "", clean_text)
+            clean_text = re.sub(r"\[[^\]]*\]\s*", "", clean_text).strip()
         if not clean_text:
             return
         dedup_key = f"{speaker}:{clean_text.lower()}"

@@ -170,3 +170,21 @@ def test_mock_payment_portal_and_completion(client: TestClient):
     # Verify call outcome upgraded to recovered
     details = get_call_details(call_id)
     assert details["outcome"] == "recovered"
+
+
+def test_update_demo_phone_and_custom_phone_call(client: TestClient):
+    # 1. Update demo phone valid
+    resp = client.post("/api/config/phone", json={"phone_number": "9876543210"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "ok"
+    assert data["demo_phone"] == "+919876543210"
+    assert data["demo_phone_masked"] == "+91XXXXXX3210"
+
+    # 2. Update demo phone invalid format -> 400
+    resp_bad = client.post("/api/config/phone", json={"phone_number": "123"})
+    assert resp_bad.status_code == 400
+
+    # 3. Call request with invalid custom phone -> 400
+    resp_call_bad = client.post("/api/calls", json={"customer_id": "CUST-001", "phone_number": "invalid"})
+    assert resp_call_bad.status_code == 400
