@@ -22,4 +22,6 @@ plan.md
 logs/
 recordings/
 node_modules/
-uv.lock
+frontend/dist/
+.pytest_cache/
+
