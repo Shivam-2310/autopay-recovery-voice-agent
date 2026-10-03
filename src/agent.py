@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -97,7 +98,7 @@ def _post_internal_event(call_id: str, event_type: str, payload: dict[str, Any])
     except Exception as db_err:
         logger.error("Direct DB persist for event %s failed: %s", event_type, db_err)
 
-    # 2. Forward to FastAPI backend for live WebSocket dashboard broadcast
+    # 2. Forward to FastAPI backend asynchronously for live WebSocket dashboard broadcast
     candidate_urls = [API_BASE_URL]
     for fallback in ["http://backend:8000", "http://127.0.0.1:8000"]:
         if fallback not in candidate_urls:
@@ -114,21 +115,17 @@ def _post_internal_event(call_id: str, event_type: str, payload: dict[str, Any])
         "timestamp": ts,
     }
 
-    posted = False
-    for base in candidate_urls:
-        url = f"{base}/internal/events"
-        try:
-            resp = requests.post(url, json=body, headers=headers, timeout=2.0)
-            if resp.status_code == 200:
-                posted = True
-                break
-            else:
-                logger.warning("Internal event %s to %s returned HTTP %s", event_type, url, resp.status_code)
-        except Exception as e:
-            logger.debug("Failed connecting to %s for event %s: %s", url, event_type, e)
+    def _post_bg() -> None:
+        for base in candidate_urls:
+            url = f"{base}/internal/events"
+            try:
+                resp = requests.post(url, json=body, headers=headers, timeout=1.5)
+                if resp.status_code == 200:
+                    return
+            except Exception:
+                pass
 
-    if not posted:
-        logger.warning("Could not reach backend via HTTP for event %s (saved to SQLite directly)", event_type)
+    threading.Thread(target=_post_bg, daemon=True).start()
 
 
 def _send_sms_via_api(
@@ -640,10 +637,29 @@ async def entrypoint(ctx: JobContext) -> None:
     except Exception:
         pass
 
-    # Wait for phone to be answered
+    # Wait for phone to be answered (skipping any dashboard live-listen listeners)
     logger.info("Waiting for customer to answer the phone (45s timeout)...")
     try:
-        participant = await asyncio.wait_for(ctx.wait_for_participant(), timeout=45.0)
+        participant = None
+        start_wait = asyncio.get_event_loop().time()
+        while participant is None and (asyncio.get_event_loop().time() - start_wait < 45.0):
+            for p in ctx.room.remote_participants.values():
+                if not getattr(p, "identity", "").startswith("listen-"):
+                    participant = p
+                    break
+            if participant:
+                break
+            try:
+                p = await asyncio.wait_for(ctx.wait_for_participant(), timeout=1.5)
+                if p and not getattr(p, "identity", "").startswith("listen-"):
+                    participant = p
+                    break
+            except TimeoutError:
+                continue
+
+        if not participant:
+            raise TimeoutError("Customer did not answer within 45s")
+
         logger.info("Customer answered: %s (kind=%s)", participant.identity, participant.kind)
     except TimeoutError:
         logger.warning("Call timed out waiting for customer to answer")

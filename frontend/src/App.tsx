@@ -141,7 +141,7 @@ export function App() {
             dedupedServer.push(st);
           }
 
-          if (dedupedServer.length >= prev.length) {
+          if (dedupedServer.length > 0) {
             return dedupedServer;
           }
           return prev;
@@ -168,6 +168,17 @@ export function App() {
               customer_id: p.customer_id || '',
               timestamp: ev.timestamp || '',
             });
+          } else if (ev.event_type === 'state.update') {
+            setCallState((prev) => ({
+              ...prev,
+              stage: p.stage || prev.stage,
+              verified: p.verified !== undefined ? p.verified : prev.verified,
+              verification_attempts: p.verification_attempts ?? prev.verification_attempts,
+              offers_made: p.offers_made ?? prev.offers_made,
+              terminal_outcome: p.terminal_outcome ?? prev.terminal_outcome,
+              outcome_note: p.outcome_note ?? prev.outcome_note,
+              do_not_call: p.do_not_call !== undefined ? p.do_not_call : prev.do_not_call,
+            }));
           }
         }
         if (restoredGuardrails.length > 0) {
@@ -176,6 +187,15 @@ export function App() {
         if (restoredToolCalls.length > 0) {
           setToolCalls(restoredToolCalls);
         }
+      }
+
+      if (details.outcome) {
+        setCallState((prev) => ({
+          ...prev,
+          stage: 'terminal',
+          terminal_outcome: details.outcome,
+          outcome_note: details.note || prev.outcome_note,
+        }));
       }
     } catch (e) {
       // quiet debug log
@@ -413,11 +433,24 @@ export function App() {
   const handleCallCustomer = async (customerId: string) => {
     const cust = customers.find((c) => c.id === customerId);
     setActiveCustomerName(cust?.name || customerId);
+    setTurns([]);
+    setGuardrails([]);
+    setToolCalls([]);
+    setCallState({
+      stage: 'init',
+      verified: false,
+      verification_attempts: 0,
+      offers_made: 0,
+      terminal_outcome: undefined,
+      outcome_note: undefined,
+      do_not_call: false,
+    });
     try {
       const res = await triggerCall(customerId);
       setActiveCallId(res.call_id);
       setActiveCallStatus('active');
       setActiveTab('live');
+      syncCallDetails(res.call_id);
     } catch (e: any) {
       alert(`Could not start call: ${e.message}`);
     }
