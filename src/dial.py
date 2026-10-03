@@ -45,6 +45,11 @@ DEFAULT_WINDOW_START_HOUR = int(os.environ.get("CALL_WINDOW_START_HOUR", "9"))
 DEFAULT_WINDOW_END_HOUR = int(os.environ.get("CALL_WINDOW_END_HOUR", "20"))
 
 
+class SIPDialException(Exception):
+    """Raised when an outbound SIP call dispatch fails or is rejected by carrier/Twilio."""
+    pass
+
+
 def normalize_phone_number(phone: str | None) -> str:
     """Normalize and validate a user-entered phone number into strict E.164 format.
 
@@ -223,6 +228,11 @@ async def dial_customer(
         )
     )
 
+    mock_sip = os.environ.get("MOCK_SIP_CALL", "false").lower() in ("true", "1", "yes")
+    if mock_sip:
+        logger.info("MOCK_SIP_CALL active: Room %s created and agent dispatched (skipping SIP trunk dial).", room_name)
+        return room_name
+
     # 5. Create SIP participant (routes strictly to DEMO_PHONE, waits until answered)
     try:
         sip_participant = await lkapi.sip.create_sip_participant(
@@ -245,23 +255,33 @@ async def dial_customer(
         return room_name
 
     except Exception as e:
+        err_msg = str(e)
         logger.warning(
             "SIP call failed or was not answered for customer %s (room %s): %s",
             cid,
             room_name,
-            e,
+            err_msg,
         )
-        # Record outcome no_answer on failure/no-pickup
         save_outcome(
             Outcome(
                 customer_id=cid,
                 disposition="no_answer",
-                notes=f"SIP call not answered / disconnected: {e}",
+                notes=f"SIP call not answered / disconnected: {err_msg}",
                 duration_sec=0.0,
                 timestamp=datetime.now(UTC),
             )
         )
-        return None
+        if "32100" in err_msg or "verified caller" in err_msg.lower():
+            raise SIPDialException(
+                f"Twilio Trial Account Error (32100): Twilio trial accounts can only place outbound calls to verified phone numbers. "
+                f"Please add '{demo_phone}' to your Verified Caller IDs in Twilio Console (Phone Numbers > Verified Caller IDs)."
+            ) from e
+        elif "30008" in err_msg or "unreachable" in err_msg.lower():
+            raise SIPDialException(
+                f"Carrier Unreachable: The target number '{demo_phone}' was unreachable or declined the call."
+            ) from e
+        else:
+            raise SIPDialException(f"SIP Call Failed or Unanswered: {err_msg}") from e
 
 
 async def main() -> None:

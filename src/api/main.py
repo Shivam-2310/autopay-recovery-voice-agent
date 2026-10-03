@@ -254,6 +254,7 @@ async def _execute_single_call(customer_id: str, custom_phone: str | None = None
     )
 
     try:
+        from src.dial import SIPDialException, dial_customer
         room_name = await dial_customer(
             customer=customer,
             lkapi=lkapi,
@@ -264,6 +265,14 @@ async def _execute_single_call(customer_id: str, custom_phone: str | None = None
         )
         if not room_name:
             raise HTTPException(status_code=500, detail="SIP call dispatch failed or was not answered")
+    except SIPDialException as e:
+        logger.warning("SIP dial error for customer %s: %s", customer_id, e)
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Error executing single call for customer %s: %s", customer_id, e)
+        raise HTTPException(status_code=500, detail=f"Call dispatch error: {e}")
 
         call_id = room_name
         create_call_record(
