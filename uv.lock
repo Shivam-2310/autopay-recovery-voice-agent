@@ -126,6 +126,18 @@ wheels = [
 ]
 
 [[package]]
+name = "aiohttp-retry"
+version = "2.9.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiohttp" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/9d/61/ebda4d8e3d8cfa1fd3db0fb428db2dd7461d5742cea35178277ad180b033/aiohttp_retry-2.9.1.tar.gz", hash = "sha256:8eb75e904ed4ee5c2ec242fefe85bf04240f685391c4879d8f541d6028ff01f1", size = 13608, upload-time = "2024-11-06T10:44:54.574Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1a/99/84ba7273339d0f3dfa57901b846489d2e5c2cd731470167757f1935fffbd/aiohttp_retry-2.9.1-py3-none-any.whl", hash = "sha256:66d2759d1921838256a05a3f80ad7e724936f083e35be5abb5e16eed6be6dc54", size = 9981, upload-time = "2024-11-06T10:44:52.917Z" },
+]
+
+[[package]]
 name = "aiosignal"
 version = "1.4.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2531,6 +2543,21 @@ wheels = [
 ]
 
 [[package]]
+name = "twilio"
+version = "9.11.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiohttp" },
+    { name = "aiohttp-retry" },
+    { name = "pyjwt" },
+    { name = "requests" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/52/a4/ca11ae74082ec95fe39932db7029c140accc09c386b947841c4edbc2252c/twilio-9.11.2.tar.gz", hash = "sha256:002df1b366ff193bf8748f68ef2ef0dda96d500c3a14898175c159633fd88643", size = 1783069, upload-time = "2026-09-28T08:55:34.396Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/43/ec/d8ed73dce0ac722ed7bb6c7823424be405db4a93cf810802f68fed5528ad/twilio-9.11.2-py2.py3-none-any.whl", hash = "sha256:dbc2cc950885dd9af573e9d1b489b8c757230bd8e3154806f4bf0def40fc59da", size = 2480411, upload-time = "2026-09-28T08:55:32.73Z" },
+]
+
+[[package]]
 name = "typer"
 version = "0.27.2"
 source = { registry = "https://pypi.org/simple" }
@@ -2735,6 +2762,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "python-dotenv" },
     { name = "python-multipart" },
+    { name = "twilio" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -2758,6 +2786,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.0" },
     { name = "python-dotenv", specifier = ">=1.0" },
     { name = "python-multipart", specifier = ">=0.0.32" },
+    { name = "twilio", specifier = ">=9.11.2" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.54.0" },
 ]
 

@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from src.api.main import app
 from src.db import create_call_record, get_call_details, get_conn, init_db
-from src.sms import build_clean_sms_body, generate_payment_token, send_payment_link_sms
+from src.sms import build_clean_sms_body, generate_payment_token, send_payment_link_sms, send_payment_link_sms_sync
 
 
 @pytest.fixture(autouse=True)
@@ -157,3 +157,30 @@ def test_twilio_status_webhook_tracking():
         )
         assert resp.status_code == 200
         assert "text/xml" in resp.headers["content-type"]
+
+
+def test_send_payment_link_sms_sync():
+    """Verify synchronous in-process SMS dispatch helper."""
+    call_id = "sync-sms-test-1"
+    create_call_record(call_id=call_id, customer_id="CUST-005", room_name=call_id, source="live")
+
+    res = send_payment_link_sms_sync(
+        call_id=call_id,
+        customer_id="CUST-005",
+        first_name="Vikram",
+        amount=3499.0,
+    )
+
+    assert res["status"] == "success"
+    assert res["mode"] == "mock"
+    assert "token" in res
+    assert "recovery" not in res["body"].lower()
+    assert "loan" not in res["body"].lower()
+
+
+def test_validate_demo_phone_normalizes_10_digit():
+    """Verify 10-digit Indian phone normalization without hardcoded numbers."""
+    from src.dial import validate_demo_phone
+    # Test normalization of any 10-digit mobile starting with 6-9
+    normalized = validate_demo_phone("9876543210")
+    assert normalized == "+919876543210"

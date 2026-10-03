@@ -19,6 +19,7 @@ dependencies = [
     "fastapi>=0.142.2",
     "uvicorn[standard]>=0.54.0",
     "python-multipart>=0.0.32",
+    "twilio>=9.11.2",
 ]
 
 [dependency-groups]

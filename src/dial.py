@@ -46,18 +46,31 @@ DEFAULT_WINDOW_END_HOUR = int(os.environ.get("CALL_WINDOW_END_HOUR", "20"))
 
 
 def validate_demo_phone(phone: str | None) -> str:
-    """Validate that DEMO_PHONE exists and matches strict E.164 format."""
+    """Validate that DEMO_PHONE exists and matches strict E.164 format.
+
+    SAFETY & COMPLIANCE:
+    Neither customer phone numbers nor Twilio sender numbers are ever hardcoded in the codebase.
+    They are picked strictly from environment variables (.env).
+    All outbound calls and SMS messages route strictly and exclusively to DEMO_PHONE.
+    If a 10-digit Indian mobile number is provided without '+' prefix, it is automatically
+    normalized to E.164 format (+91XXXXXXXXXX).
+    """
     if not phone:
         logger.error(
-            "FATAL: DEMO_PHONE is not set in environment. "
-            "All outbound calls must route strictly to DEMO_PHONE."
+            "FATAL: DEMO_PHONE is not set in environment (.env). "
+            "All outbound calls and SMS messages must route strictly to DEMO_PHONE."
         )
         sys.exit(1)
 
     phone_clean = phone.strip()
+    # Normalize 10-digit Indian mobile numbers (e.g., 9876543210 -> +919876543210)
+    if re.match(r"^[6-9]\d{9}$", phone_clean):
+        phone_clean = f"+91{phone_clean}"
+
     if not re.match(r"^\+[1-9]\d{1,14}$", phone_clean):
         logger.error(
-            "FATAL: DEMO_PHONE '%s' is not a valid E.164 phone number (e.g. +919876543210).",
+            "FATAL: DEMO_PHONE '%s' is not a valid E.164 phone number. "
+            "It must start with '+' followed by country code (e.g. +91XXXXXXXXXX).",
             phone_clean,
         )
         sys.exit(1)

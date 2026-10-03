@@ -45,11 +45,19 @@ async def send_payment_link_sms(
     first_name: str,
     amount: float,
 ) -> dict[str, Any]:
-    """Send payment link via Twilio SMS to DEMO_PHONE (or simulate if mock mode)."""
-    raw_demo = os.environ.get("DEMO_PHONE", "+919876543210")
+    """Send payment link via Twilio SMS strictly to DEMO_PHONE loaded from .env.
+
+    SAFETY & COMPLIANCE:
+    Customer destination phone (DEMO_PHONE) and Twilio sender/service credentials
+    (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_MESSAGING_SERVICE_SID, TWILIO_NUMBER)
+    are strictly loaded from .env and never hardcoded in application logic.
+    Dispatches directly via Twilio Messages API using MessagingServiceSid or From caller ID,
+    using HTTP Basic Authentication, with a clean compliant body.
+    """
+    raw_demo = os.environ.get("DEMO_PHONE")
     demo_phone = validate_demo_phone(raw_demo)
     masked_to = mask_phone_number(demo_phone)
-    sms_mode = os.environ.get("SMS_MODE", "mock").lower()
+    sms_mode = os.environ.get("SMS_MODE", "twilio").lower()
     public_base_url = os.environ.get("PUBLIC_BASE_URL", "http://localhost:8000").rstrip("/")
 
     token = generate_payment_token()
@@ -60,58 +68,104 @@ async def send_payment_link_sms(
     add_link_event(token=token, call_id=call_id, event_type="created")
 
     # 2. Check mode: Twilio vs Mock
-    if sms_mode == "twilio":
-        account_sid = os.environ.get("TWILIO_ACCOUNT_SID")
-        auth_token = os.environ.get("TWILIO_AUTH_TOKEN")
-        from_number = os.environ.get("TWILIO_NUMBER") or os.environ.get("TWILIO_PHONE_NUMBER")
+    account_sid = os.environ.get("TWILIO_ACCOUNT_SID")
+    auth_token = os.environ.get("TWILIO_AUTH_TOKEN")
+    messaging_service_sid = os.environ.get("TWILIO_MESSAGING_SERVICE_SID")
+    from_number = os.environ.get("TWILIO_NUMBER") or os.environ.get("TWILIO_PHONE_NUMBER")
 
-        if not (account_sid and auth_token and from_number):
-            logger.warning("Twilio credentials missing. Falling back to mock SMS mode.")
+    if sms_mode == "twilio":
+        if not (account_sid and auth_token and (messaging_service_sid or from_number)):
+            logger.warning("Twilio credentials missing in .env. Falling back to mock SMS mode.")
             sms_mode = "mock"
         else:
             try:
-                from twilio.rest import Client
-                client = Client(account_sid, auth_token)
+                import httpx
 
+                url = f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Messages.json"
                 callback_url = f"{public_base_url}/api/twilio/status" if os.environ.get("PUBLIC_BASE_URL") else None
 
-                kwargs: dict[str, Any] = {
-                    "body": body,
-                    "from_": from_number,
-                    "to": demo_phone,
+                form_data: dict[str, Any] = {
+                    "To": demo_phone,
+                    "Body": body,
                 }
+                if messaging_service_sid:
+                    form_data["MessagingServiceSid"] = messaging_service_sid
+                elif from_number:
+                    form_data["From"] = from_number
+
                 if callback_url:
-                    kwargs["status_callback"] = callback_url
+                    form_data["StatusCallback"] = callback_url
 
-                message = client.messages.create(**kwargs)
-                logger.info("Twilio SMS dispatched: sid=%s status=%s", message.sid, message.status)
+                async with httpx.AsyncClient(timeout=15.0) as http_client:
+                    resp = await http_client.post(
+                        url,
+                        data=form_data,
+                        auth=(account_sid, auth_token),
+                    )
+                    resp_data = resp.json()
 
-                add_message(
-                    call_id=call_id,
-                    sid=message.sid,
-                    to_masked=masked_to,
-                    status=message.status,
-                    mode="twilio",
-                    error_code=str(message.error_code) if message.error_code else None,
-                )
-                add_link_event(token=token, call_id=call_id, event_type="sent")
+                if resp.status_code in (200, 201):
+                    msg_sid = resp_data.get("sid", f"SM_{secrets.token_hex(8)}")
+                    msg_status = resp_data.get("status", "sent")
+                    logger.info(
+                        "Twilio SMS dispatched successfully: sid=%s status=%s to=%s",
+                        msg_sid,
+                        msg_status,
+                        masked_to,
+                    )
 
-                # If no public callback URL, start background polling
-                if not callback_url:
-                    asyncio.create_task(_poll_twilio_status(client, message.sid, call_id, token))
+                    add_message(
+                        call_id=call_id,
+                        sid=msg_sid,
+                        to_masked=masked_to,
+                        status=msg_status,
+                        mode="twilio",
+                        error_code=None,
+                    )
+                    add_link_event(token=token, call_id=call_id, event_type="sent")
 
-                return {
-                    "status": "success",
-                    "sid": message.sid,
-                    "token": token,
-                    "url": pay_url,
-                    "body": body,
-                    "mode": "twilio",
-                    "initial_status": message.status,
-                }
+                    # If no public callback URL, start background HTTP polling
+                    if not callback_url:
+                        asyncio.create_task(_poll_twilio_status_http(account_sid, auth_token, msg_sid, call_id, token))
+
+                    return {
+                        "status": "success",
+                        "sid": msg_sid,
+                        "token": token,
+                        "url": pay_url,
+                        "body": body,
+                        "mode": "twilio",
+                        "initial_status": msg_status,
+                    }
+                else:
+                    err_code = str(resp_data.get("code") or resp.status_code)
+                    err_msg = resp_data.get("message") or resp.text
+                    logger.error(
+                        "Twilio SMS dispatch failed: HTTP %s, code %s, message: %s",
+                        resp.status_code,
+                        err_code,
+                        err_msg,
+                    )
+                    error_sid = f"err_{secrets.token_hex(4)}"
+                    add_message(
+                        call_id=call_id,
+                        sid=error_sid,
+                        to_masked=masked_to,
+                        status="failed",
+                        mode="twilio",
+                        error_code=err_code,
+                    )
+                    return {
+                        "status": "error",
+                        "error": err_msg,
+                        "error_code": err_code,
+                        "sid": error_sid,
+                        "body": body,
+                        "mode": "twilio",
+                    }
 
             except Exception as e:
-                logger.error("Twilio SMS send failed: %s", e)
+                logger.error("Twilio SMS send exception: %s", e)
                 error_sid = f"err_{secrets.token_hex(4)}"
                 add_message(
                     call_id=call_id,
@@ -164,24 +218,182 @@ async def _simulate_mock_delivery(sid: str, token: str, call_id: str) -> None:
     logger.info("Mock SMS delivered: sid=%s", sid)
 
 
-async def _poll_twilio_status(client: Any, sid: str, call_id: str, token: str, max_duration_sec: int = 120) -> None:
+async def _poll_twilio_status_http(
+    account_sid: str,
+    auth_token: str,
+    sid: str,
+    call_id: str,
+    token: str,
+    max_duration_sec: int = 120,
+) -> None:
     """Poll Twilio message status resource when webhook URL is not publicly reachable."""
+    import httpx
+
     start_time = asyncio.get_event_loop().time()
-    while asyncio.get_event_loop().time() - start_time < max_duration_sec:
-        await asyncio.sleep(5.0)
-        try:
-            msg = client.messages(sid).fetch()
-            update_message_status(
-                sid=sid,
-                status=msg.status,
-                error_code=str(msg.error_code) if msg.error_code else None,
-                error_message=msg.error_message,
-            )
-            if msg.status == "delivered":
-                add_link_event(token=token, call_id=call_id, event_type="delivered")
-                break
-            if msg.status in ("failed", "undelivered"):
-                break
-        except Exception as e:
-            logger.warning("Error polling Twilio status for %s: %s", sid, e)
-            break
+    poll_interval = 4.0
+    url = f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Messages/{sid}.json"
+
+    async with httpx.AsyncClient(timeout=10.0) as http_client:
+        while asyncio.get_event_loop().time() - start_time < max_duration_sec:
+            await asyncio.sleep(poll_interval)
+            try:
+                resp = await http_client.get(url, auth=(account_sid, auth_token))
+                if resp.status_code == 200:
+                    data = resp.json()
+                    status = data.get("status")
+                    error_code = str(data.get("error_code")) if data.get("error_code") else None
+                    update_message_status(
+                        sid=sid,
+                        status=status,
+                        error_code=error_code,
+                        error_message=data.get("error_message"),
+                    )
+
+                    if status in ("delivered", "undelivered", "failed"):
+                        if status == "delivered":
+                            add_link_event(token=token, call_id=call_id, event_type="delivered")
+                        break
+            except Exception as e:
+                logger.debug("Error polling Twilio status for %s: %s", sid, e)
+
+
+def send_payment_link_sms_sync(
+    call_id: str,
+    customer_id: str,
+    first_name: str,
+    amount: float,
+) -> dict[str, Any]:
+    """Synchronous version of send_payment_link_sms for in-process agent worker callers.
+
+    SAFETY & COMPLIANCE:
+    Customer destination phone (DEMO_PHONE) and Twilio sender/service credentials
+    are strictly loaded from .env and never hardcoded in application logic.
+    Dispatches directly via Twilio Messages API using MessagingServiceSid or From caller ID.
+    """
+    raw_demo = os.environ.get("DEMO_PHONE")
+    demo_phone = validate_demo_phone(raw_demo)
+    masked_to = mask_phone_number(demo_phone)
+    sms_mode = os.environ.get("SMS_MODE", "twilio").lower()
+    public_base_url = os.environ.get("PUBLIC_BASE_URL", "http://localhost:8000").rstrip("/")
+
+    token = generate_payment_token()
+    pay_url = f"{public_base_url}/pay/{token}"
+    body = build_clean_sms_body(first_name, amount, pay_url)
+
+    add_link_event(token=token, call_id=call_id, event_type="created")
+
+    account_sid = os.environ.get("TWILIO_ACCOUNT_SID")
+    auth_token = os.environ.get("TWILIO_AUTH_TOKEN")
+    messaging_service_sid = os.environ.get("TWILIO_MESSAGING_SERVICE_SID")
+    from_number = os.environ.get("TWILIO_NUMBER") or os.environ.get("TWILIO_PHONE_NUMBER")
+
+    if sms_mode == "twilio":
+        if not (account_sid and auth_token and (messaging_service_sid or from_number)):
+            logger.warning("Twilio credentials missing in .env. Falling back to mock SMS mode.")
+            sms_mode = "mock"
+        else:
+            try:
+                import requests as req
+
+                url = f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Messages.json"
+                form_data: dict[str, Any] = {
+                    "To": demo_phone,
+                    "Body": body,
+                }
+                if messaging_service_sid:
+                    form_data["MessagingServiceSid"] = messaging_service_sid
+                elif from_number:
+                    form_data["From"] = from_number
+
+                callback_url = f"{public_base_url}/api/twilio/status" if os.environ.get("PUBLIC_BASE_URL") else None
+                if callback_url:
+                    form_data["StatusCallback"] = callback_url
+
+                resp = req.post(url, data=form_data, auth=(account_sid, auth_token), timeout=15.0)
+                resp_data = resp.json()
+
+                if resp.status_code in (200, 201):
+                    msg_sid = resp_data.get("sid", f"SM_{secrets.token_hex(8)}")
+                    msg_status = resp_data.get("status", "sent")
+                    logger.info("Twilio SMS dispatched successfully (sync): sid=%s to=%s", msg_sid, masked_to)
+
+                    add_message(
+                        call_id=call_id,
+                        sid=msg_sid,
+                        to_masked=masked_to,
+                        status=msg_status,
+                        mode="twilio",
+                        error_code=None,
+                    )
+                    add_link_event(token=token, call_id=call_id, event_type="sent")
+
+                    return {
+                        "status": "success",
+                        "sid": msg_sid,
+                        "token": token,
+                        "url": pay_url,
+                        "body": body,
+                        "mode": "twilio",
+                        "initial_status": msg_status,
+                    }
+                else:
+                    err_code = str(resp_data.get("code") or resp.status_code)
+                    err_msg = resp_data.get("message") or resp.text
+                    logger.error("Twilio SMS dispatch failed: HTTP %s, code %s: %s", resp.status_code, err_code, err_msg)
+                    error_sid = f"err_{secrets.token_hex(4)}"
+                    add_message(
+                        call_id=call_id,
+                        sid=error_sid,
+                        to_masked=masked_to,
+                        status="failed",
+                        mode="twilio",
+                        error_code=err_code,
+                    )
+                    return {
+                        "status": "error",
+                        "error": err_msg,
+                        "error_code": err_code,
+                        "sid": error_sid,
+                        "body": body,
+                        "mode": "twilio",
+                    }
+            except Exception as e:
+                logger.error("Twilio SMS sync exception: %s", e)
+                error_sid = f"err_{secrets.token_hex(4)}"
+                add_message(
+                    call_id=call_id,
+                    sid=error_sid,
+                    to_masked=masked_to,
+                    status="failed",
+                    mode="twilio",
+                    error_code="SEND_FAILED",
+                )
+                return {
+                    "status": "error",
+                    "error": str(e),
+                    "sid": error_sid,
+                    "body": body,
+                    "mode": "twilio",
+                }
+
+    # Mock mode (deterministic, simulated lifecycle)
+    mock_sid = f"SM_mock_{secrets.token_hex(8)}"
+    logger.info("Mock SMS simulated (sync): sid=%s to=%s", mock_sid, masked_to)
+    add_message(
+        call_id=call_id,
+        sid=mock_sid,
+        to_masked=masked_to,
+        status="sent",
+        mode="mock",
+    )
+    add_link_event(token=token, call_id=call_id, event_type="sent")
+
+    return {
+        "status": "success",
+        "sid": mock_sid,
+        "token": token,
+        "url": pay_url,
+        "body": body,
+        "mode": "mock",
+        "initial_status": "sent",
+    }

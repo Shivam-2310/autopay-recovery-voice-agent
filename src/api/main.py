@@ -157,12 +157,13 @@ def get_health() -> dict[str, str]:
 
 @app.get("/api/config")
 def get_config() -> dict[str, Any]:
-    raw_demo = os.environ.get("DEMO_PHONE", "+919876543210")
+    raw_demo = os.environ.get("DEMO_PHONE")
+    demo_phone = validate_demo_phone(raw_demo)
     demo_override = os.environ.get("DEMO_OVERRIDE", "").lower() in ("true", "1", "yes")
     in_window, window_reason = check_call_window(demo_override=demo_override)
 
     return {
-        "demo_phone_masked": mask_phone_number(raw_demo),
+        "demo_phone_masked": mask_phone_number(demo_phone),
         "demo_override": demo_override,
         "in_call_window": in_window,
         "call_window_status": window_reason,

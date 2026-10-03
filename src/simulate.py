@@ -142,8 +142,18 @@ def run_persona_simulation(customer: dict[str, Any]) -> dict[str, Any]:
         events.append({"event_type": event_type, "payload": payload, "ts": datetime.now(UTC).isoformat()})
         add_event(call_id=call_id, event_type=event_type, payload=payload)
 
-    # Instantiate real gated tools
-    tools_list = make_tools(state, emit_event_fn=_emit)
+    def _sim_send_sms(cid: str, fname: str, amt: float) -> dict[str, Any]:
+        """Dispatch SMS payment link strictly to DEMO_PHONE loaded from .env."""
+        import asyncio
+        from src.sms import send_payment_link_sms
+        try:
+            return asyncio.run(send_payment_link_sms(call_id, cid, fname, amt))
+        except Exception as e:
+            logger.error("Simulation SMS dispatch error: %s", e)
+            return {"status": "error", "error": str(e)}
+
+    # Instantiate real gated tools, routing SMS strictly to DEMO_PHONE loaded from .env
+    tools_list = make_tools(state, emit_event_fn=_emit, send_sms_fn=_sim_send_sms)
     tools = {t.name: t for t in tools_list}
 
     # Create call record in DB with source='simulated'

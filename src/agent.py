@@ -72,7 +72,7 @@ def _post_internal_event(call_id: str, event_type: str, payload: dict[str, Any])
 
 
 def _send_sms_via_api(call_id: str, customer_id: str, first_name: str, amount: float) -> dict[str, Any]:
-    """Request FastAPI backend to dispatch payment link SMS via internal endpoint."""
+    """Request FastAPI backend to dispatch payment link SMS, falling back to direct dispatch if API is down."""
     url = f"{API_BASE_URL}/internal/sms"
     headers = {
         "X-Internal-Secret": INTERNAL_SECRET,
@@ -89,10 +89,16 @@ def _send_sms_via_api(call_id: str, customer_id: str, first_name: str, amount: f
         if resp.status_code == 200:
             return resp.json()
         logger.warning("Internal SMS dispatch returned HTTP %s: %s", resp.status_code, resp.text)
-        return {"status": "error", "error": f"HTTP {resp.status_code}"}
     except Exception as e:
-        logger.error("Failed to call internal SMS endpoint: %s", e)
-        return {"status": "error", "error": str(e)}
+        logger.info("Internal SMS endpoint unreachable (%s), falling back to in-process dispatch", e)
+
+    # In-process direct fallback using send_payment_link_sms_sync
+    try:
+        from src.sms import send_payment_link_sms_sync
+        return send_payment_link_sms_sync(call_id, customer_id, first_name, amount)
+    except Exception as direct_err:
+        logger.error("In-process SMS dispatch failed: %s", direct_err)
+        return {"status": "error", "error": str(direct_err)}
 
 
 def prewarm(proc: agents.JobProcess) -> None:
