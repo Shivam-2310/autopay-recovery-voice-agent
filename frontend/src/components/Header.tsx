@@ -9,7 +9,6 @@ interface HeaderProps {
   activeTab: 'overview' | 'live' | 'messages' | 'history';
   setActiveTab: (tab: 'overview' | 'live' | 'messages' | 'history') => void;
   hasActiveCall: boolean;
-  targetPhone?: string;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -18,7 +17,6 @@ export const Header: React.FC<HeaderProps> = ({
   activeTab,
   setActiveTab,
   hasActiveCall,
-  targetPhone,
 }) => {
   const getStatusColor = () => {
     switch (wsStatus) {
@@ -29,8 +27,6 @@ export const Header: React.FC<HeaderProps> = ({
       default: return 'bg-rose-500';
     }
   };
-
-  const isCustomPhone = Boolean(targetPhone && config?.demo_phone && targetPhone !== config.demo_phone);
 
   return (
     <header className="bg-slate-900 border-b border-slate-800 sticky top-0 z-40">
@@ -44,13 +40,8 @@ export const Header: React.FC<HeaderProps> = ({
           <span className="text-slate-400">
             Active Call & SMS target:{' '}
             <strong className="text-sky-300 font-mono font-bold">
-              {targetPhone || config?.demo_phone || config?.demo_phone_masked || '+91XXXXXXXXXX'}
+              {config?.demo_phone || config?.demo_phone_masked || '+91XXXXXXXXXX'}
             </strong>
-            {isCustomPhone && (
-              <span className="ml-1.5 bg-purple-900/60 text-purple-300 px-1.5 py-0.5 rounded text-[10px] border border-purple-700/50">
-                Custom Phone Active
-              </span>
-            )}
           </span>
         </div>
 

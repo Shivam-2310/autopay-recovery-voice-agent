@@ -13,9 +13,6 @@ import {
   ShieldAlert,
   Loader2,
   Smartphone,
-  RotateCcw,
-  Save,
-  Check,
 } from 'lucide-react';
 import type { Customer, Metrics, BatchProgress } from '../types';
 
@@ -24,14 +21,10 @@ interface OverviewTabProps {
   customers: Customer[];
   activeCallId: string | null;
   batchProgress: BatchProgress | null;
-  onCallCustomer: (customerId: string, phoneOverride?: string) => Promise<void>;
+  onCallCustomer: (customerId: string) => Promise<void>;
   onTriggerBatch: () => Promise<void>;
   onCancelBatch: () => Promise<void>;
-  targetPhone: string;
-  defaultPhone?: string;
-  onTargetPhoneChange: (phone: string) => void;
-  onResetTargetPhone: () => void;
-  onSaveDefaultPhone?: (phone: string) => Promise<void>;
+  demoPhone?: string;
 }
 
 export const OverviewTab: React.FC<OverviewTabProps> = ({
@@ -42,37 +35,17 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
   onCallCustomer,
   onTriggerBatch,
   onCancelBatch,
-  targetPhone,
-  defaultPhone,
-  onTargetPhoneChange,
-  onResetTargetPhone,
-  onSaveDefaultPhone,
+  demoPhone,
 }) => {
   const [dialingId, setDialingId] = useState<string | null>(null);
   const [batchLoading, setBatchLoading] = useState(false);
-  const [isSavingPhone, setIsSavingPhone] = useState(false);
-  const [saveSuccess, setSaveSuccess] = useState(false);
 
   const handleSingleCall = async (cid: string) => {
     setDialingId(cid);
     try {
-      await onCallCustomer(cid, targetPhone);
+      await onCallCustomer(cid);
     } finally {
       setDialingId(null);
-    }
-  };
-
-  const handleSavePhone = async () => {
-    if (!onSaveDefaultPhone || !targetPhone) return;
-    setIsSavingPhone(true);
-    try {
-      await onSaveDefaultPhone(targetPhone);
-      setSaveSuccess(true);
-      setTimeout(() => setSaveSuccess(false), 2500);
-    } catch (e: any) {
-      alert(`Could not save default phone: ${e.message}`);
-    } finally {
-      setIsSavingPhone(false);
     }
   };
 
@@ -197,72 +170,31 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
 
       {/* ── Live Phone Testing Destination Panel ── */}
       <div className="bg-gradient-to-r from-slate-900 via-slate-900 to-sky-950/40 border border-slate-800 rounded-xl p-4 shadow-lg">
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-          <div className="flex items-start gap-3">
-            <div className="w-10 h-10 rounded-lg bg-sky-500/10 border border-sky-500/30 flex items-center justify-center shrink-0 mt-0.5">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-lg bg-sky-500/10 border border-sky-500/30 flex items-center justify-center shrink-0">
               <Smartphone className="w-5 h-5 text-sky-400" />
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h3 className="text-sm font-semibold text-white">Live Phone Testing Destination</h3>
-                {targetPhone && defaultPhone && targetPhone !== defaultPhone ? (
-                  <span className="bg-purple-950 text-purple-300 border border-purple-800/60 text-[10px] px-2 py-0.5 rounded-full font-medium">
-                    Custom Tester Number
-                  </span>
-                ) : (
-                  <span className="bg-emerald-950 text-emerald-300 border border-emerald-800/60 text-[10px] px-2 py-0.5 rounded-full font-medium">
-                    Default (Your Phone)
-                  </span>
-                )}
+                <h3 className="text-sm font-semibold text-white">Live Phone Destination</h3>
+                <span className="bg-emerald-950 text-emerald-300 border border-emerald-800/60 text-[10px] px-2 py-0.5 rounded-full font-medium flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                  Verified Target Device
+                </span>
               </div>
               <p className="text-xs text-slate-400 mt-0.5">
-                All outbound recovery calls & SMS payment links route to this phone so anyone evaluating can test the AI agent live on their own device.
+                All outbound recovery calls & SMS payment links route directly to your verified phone number.
               </p>
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="relative">
-              <Phone className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
-              <input
-                type="text"
-                value={targetPhone}
-                onChange={(e) => onTargetPhoneChange(e.target.value)}
-                placeholder="+91XXXXXXXXXX or 10 digits"
-                className="bg-slate-950 border border-slate-700 focus:border-sky-500 focus:ring-1 focus:ring-sky-500 rounded-lg pl-8 pr-3 py-1.5 text-xs text-white font-mono placeholder:text-slate-600 w-52 transition"
-              />
-            </div>
-
-            {defaultPhone && targetPhone !== defaultPhone && (
-              <button
-                onClick={onResetTargetPhone}
-                className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 px-2.5 py-1.5 rounded-lg border border-slate-700 transition flex items-center gap-1"
-                title="Reset to default phone from server .env"
-              >
-                <RotateCcw className="w-3.5 h-3.5" />
-                Reset
-              </button>
-            )}
-
-            {onSaveDefaultPhone && (
-              <button
-                onClick={handleSavePhone}
-                disabled={isSavingPhone || !targetPhone}
-                className="text-xs bg-sky-600/20 hover:bg-sky-600/30 text-sky-300 border border-sky-500/30 px-3 py-1.5 rounded-lg font-medium transition flex items-center gap-1.5 disabled:opacity-50"
-              >
-                {saveSuccess ? (
-                  <>
-                    <Check className="w-3.5 h-3.5 text-emerald-400" />
-                    <span className="text-emerald-300">Saved</span>
-                  </>
-                ) : (
-                  <>
-                    <Save className="w-3.5 h-3.5" />
-                    Set Default
-                  </>
-                )}
-              </button>
-            )}
+          <div className="flex items-center gap-2.5 bg-slate-950 border border-slate-800 px-4 py-2 rounded-lg">
+            <Phone className="w-4 h-4 text-sky-400" />
+            <span className="text-xs text-slate-400">Target Phone:</span>
+            <span className="text-xs font-mono font-bold text-white tracking-wider">
+              {demoPhone || '+91XXXXXXXXXX'}
+            </span>
           </div>
         </div>
       </div>
@@ -275,7 +207,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
             <span className="text-xs font-normal text-slate-400">(Dial each candidate customer in sequence with 5s delay)</span>
           </h3>
           <p className="text-xs text-slate-400 mt-0.5">
-            Safely routes one outbound call at a time to {targetPhone || defaultPhone || 'DEMO_PHONE'} with automated state transitions.
+            Safely routes one outbound call at a time to {demoPhone || 'verified phone'} with automated state transitions.
           </p>
         </div>
 
@@ -342,7 +274,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
                   <tr key={c.id} className="hover:bg-slate-800/30 transition">
                     <td className="py-3 px-4 font-mono font-medium text-slate-300">{c.id}</td>
                     <td className="py-3 px-4 font-semibold text-white">{c.name}</td>
-                    <td className="py-3 px-4 font-mono text-slate-400">{c.phone_masked || c.phone}</td>
+                    <td className="py-3 px-4 font-mono font-medium text-slate-300">{demoPhone || c.phone_masked || c.phone}</td>
                     <td className="py-3 px-4 text-slate-300">{c.bank_name}</td>
                     <td className="py-3 px-4 font-semibold text-emerald-400">₹{c.amount_due.toLocaleString('en-IN')}</td>
                     <td className="py-3 px-4 font-mono text-slate-400">{c.due_date}</td>

@@ -15,7 +15,6 @@ import {
   triggerBatchCalls,
   cancelBatchCalls,
   endCall,
-  updateDefaultPhone,
 } from './api';
 import type {
   SystemConfig,
@@ -36,11 +35,6 @@ export function App() {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [calls, setCalls] = useState<CallRecord[]>([]);
   const [metrics, setMetrics] = useState<Metrics | null>(null);
-
-  // Editable target test phone
-  const [targetPhone, setTargetPhone] = useState<string>(() => {
-    return localStorage.getItem('test_target_phone') || '';
-  });
 
   // Active call state
   const [activeCallId, setActiveCallId] = useState<string | null>(null);
@@ -76,9 +70,6 @@ export function App() {
       setCustomers(custs);
       setCalls(cls);
       setMetrics(mets);
-      if (cfg?.demo_phone && !localStorage.getItem('test_target_phone')) {
-        setTargetPhone(cfg.demo_phone);
-      }
     } catch (err) {
       console.error('Failed to load initial data:', err);
     }
@@ -284,33 +275,12 @@ export function App() {
     onMessage: handleWsMessage,
   });
 
-  // Phone customization handlers
-  const handleTargetPhoneChange = (newPhone: string) => {
-    setTargetPhone(newPhone);
-    localStorage.setItem('test_target_phone', newPhone);
-  };
-
-  const handleResetTargetPhone = () => {
-    if (config?.demo_phone) {
-      setTargetPhone(config.demo_phone);
-      localStorage.setItem('test_target_phone', config.demo_phone);
-    }
-  };
-
-  const handleSaveDefaultPhone = async (newPhone: string) => {
-    const res = await updateDefaultPhone(newPhone);
-    setConfig((prev) => prev ? { ...prev, demo_phone: res.demo_phone, demo_phone_masked: res.demo_phone_masked } : prev);
-    setTargetPhone(res.demo_phone);
-    localStorage.setItem('test_target_phone', res.demo_phone);
-  };
-
   // Action Handlers
-  const handleCallCustomer = async (customerId: string, phoneOverride?: string) => {
+  const handleCallCustomer = async (customerId: string) => {
     const cust = customers.find((c) => c.id === customerId);
     setActiveCustomerName(cust?.name || customerId);
-    const phoneToCall = phoneOverride || targetPhone || undefined;
     try {
-      const res = await triggerCall(customerId, phoneToCall);
+      const res = await triggerCall(customerId);
       setActiveCallId(res.call_id);
       setActiveCallStatus('active');
       setActiveTab('live');
@@ -360,7 +330,6 @@ export function App() {
         activeTab={activeTab}
         setActiveTab={setActiveTab}
         hasActiveCall={activeCallStatus === 'active'}
-        targetPhone={targetPhone}
       />
 
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 py-6">
@@ -373,11 +342,7 @@ export function App() {
             onCallCustomer={handleCallCustomer}
             onTriggerBatch={handleTriggerBatch}
             onCancelBatch={handleCancelBatch}
-            targetPhone={targetPhone}
-            defaultPhone={config?.demo_phone}
-            onTargetPhoneChange={handleTargetPhoneChange}
-            onResetTargetPhone={handleResetTargetPhone}
-            onSaveDefaultPhone={handleSaveDefaultPhone}
+            demoPhone={config?.demo_phone}
           />
         )}
 
