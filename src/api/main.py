@@ -784,28 +784,92 @@ async def mock_payment_page(token: str) -> str:
 
 
 @app.post("/pay/{token}/complete")
-async def complete_mock_payment(token: str) -> dict[str, str]:
-    """Mark link paid and upgrade call outcome to recovered (via link)."""
-    # Find call_id associated with this token
+async def complete_mock_payment(token: str) -> dict[str, Any]:
+    """Mark link paid, update customer recovery state in SQLite, and broadcast payment confirmation."""
     from src.db import get_conn
+    call_id = "unknown"
+    customer_id = None
+    customer_name = "Customer"
+    amount_due = 0
+
     with get_conn() as conn:
         row = conn.execute("SELECT call_id FROM link_events WHERE token = ? LIMIT 1", (token,)).fetchone()
-        call_id = row["call_id"] if row else "unknown"
+        if row and row["call_id"]:
+            call_id = row["call_id"]
+
+        if call_id != "unknown":
+            call_row = conn.execute(
+                """
+                SELECT c.customer_id, cs.name, cs.amount_due 
+                FROM calls c
+                LEFT JOIN customers_state cs ON c.customer_id = cs.id
+                WHERE c.id = ?
+                """,
+                (call_id,),
+            ).fetchone()
+            if call_row:
+                customer_id = call_row["customer_id"]
+                customer_name = call_row["name"] or "Customer"
+                amount_due = call_row["amount_due"] or 0
 
     add_link_event(token=token, call_id=call_id, event_type="paid")
 
     if call_id != "unknown":
-        update_call_record(call_id=call_id, outcome="recovered", note="recovered via link")
+        update_call_record(call_id=call_id, status="completed", outcome="recovered", note="recovered via link")
 
+    if customer_id:
+        with get_conn() as conn:
+            conn.execute(
+                "UPDATE customers_state SET last_outcome = 'recovered' WHERE id = ?",
+                (customer_id,),
+            )
+
+    now_iso = datetime.now(UTC).isoformat()
+
+    # 1. High-priority payment confirmation for dashboard banner/toast
+    await ws_manager.broadcast({
+        "type": "payment.confirmed",
+        "token": token,
+        "call_id": call_id,
+        "customer_id": customer_id,
+        "customer_name": customer_name,
+        "amount": amount_due,
+        "method": "sms_link",
+        "message": f"Payment of ₹{amount_due} received from {customer_name} via SMS link",
+        "timestamp": now_iso,
+    })
+
+    # 2. Lifecycle link event
     await ws_manager.broadcast({
         "type": "link.event",
         "token": token,
         "call_id": call_id,
         "event": "paid",
-        "timestamp": datetime.now(UTC).isoformat(),
+        "customer_id": customer_id,
+        "customer_name": customer_name,
+        "amount": amount_due,
+        "timestamp": now_iso,
     })
 
-    return {"status": "paid", "token": token}
+    # 3. Call status update
+    await ws_manager.broadcast({
+        "type": "call.status",
+        "call_id": call_id,
+        "status": "completed",
+        "outcome": "recovered",
+    })
+
+    # 4. State update for in-memory call state
+    if customer_id:
+        await ws_manager.broadcast({
+            "type": "state.update",
+            "customer_id": customer_id,
+            "terminal_outcome": "recovered",
+            "outcome_note": "Paid via SMS link",
+        })
+
+    logger.info("Payment confirmed via SMS link token=%s call_id=%s customer=%s amount=₹%s", token, call_id, customer_name, amount_due)
+    return {"status": "paid", "token": token, "amount": amount_due, "customer": customer_name}
 
 
 # ── WebSocket Telemetry Stream ────────────────────────────────────────────────

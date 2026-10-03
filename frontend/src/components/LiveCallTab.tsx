@@ -334,6 +334,15 @@ export const LiveCallTab: React.FC<LiveCallTabProps> = ({
                     <div className="text-[10px] text-slate-400 font-normal mt-0.5">{callState.outcome_note}</div>
                   )}
                 </div>
+                {callState.terminal_outcome === 'recovered' && (
+                  <div className="mt-2.5 bg-emerald-950/80 border border-emerald-500/60 rounded-lg p-2.5 flex items-center gap-2 text-emerald-300 shadow-md shadow-emerald-950/40">
+                    <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0" />
+                    <div>
+                      <div className="text-[11px] font-bold text-emerald-300">✓ PAYMENT CONFIRMED</div>
+                      <div className="text-[10px] text-emerald-400/80">Account successfully recovered via link</div>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>

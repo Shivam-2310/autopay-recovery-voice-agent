@@ -524,23 +524,47 @@ async def entrypoint(ctx: JobContext) -> None:
         elif role == "user":
             record_turn("customer", text)
 
-    @session.on("close")
-    def on_close(ev: Any) -> None:
-        reason = getattr(ev, "reason", "unknown")
-        logger.info("Call session closed: reason=%s", reason)
+    call_ended_emitted = False
+
+    def emit_call_ended(reason: str = "normal") -> None:
+        nonlocal call_ended_emitted
+        if call_ended_emitted:
+            return
+        call_ended_emitted = True
         duration = asyncio.get_event_loop().time() - call_start_time
         full_transcript = "\n".join(transcript_lines)
 
         final_outcome = call_state.terminal_outcome or "declined"
-        note = call_state.outcome_note or "Call ended before terminal resolution"
+        note = call_state.outcome_note or f"Call ended ({reason})"
 
+        logger.info("Call session concluded (%s): duration=%.1fs, outcome=%s, note=%s", reason, duration, final_outcome, note)
         _post_internal_event(call_id, "call.ended", {
             "customer_id": customer["id"],
             "final_outcome": final_outcome,
             "outcome_note": note,
-            "duration_sec": round(duration, 2),
+            "duration_sec": max(1.0, round(duration, 1)),
             "transcript": full_transcript,
         })
+
+    # Hook multiple lifecycle events to guarantee call.ended is persisted
+    @ctx.room.on("participant_disconnected")
+    def on_participant_disconnected(p: Any) -> None:
+        logger.info("Participant disconnected: %s", getattr(p, "identity", "unknown"))
+        emit_call_ended("participant_disconnected")
+
+    @ctx.room.on("disconnected")
+    def on_room_disconnected() -> None:
+        logger.info("Room disconnected: %s", ctx.room.name)
+        emit_call_ended("room_disconnected")
+
+    ctx.add_shutdown_callback(lambda: emit_call_ended("shutdown"))
+
+    try:
+        @session.on("close")
+        def on_close(ev: Any) -> None:
+            emit_call_ended("session_closed")
+    except Exception:
+        pass
 
     # Wait for phone to be answered
     logger.info("Waiting for customer to answer the phone (45s timeout)...")

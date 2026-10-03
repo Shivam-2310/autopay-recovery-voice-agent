@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { CheckCircle2, X } from 'lucide-react';
 import { Header } from './components/Header';
 import { OverviewTab } from './components/OverviewTab';
 import { LiveCallTab } from './components/LiveCallTab';
@@ -35,6 +36,14 @@ export function App() {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [calls, setCalls] = useState<CallRecord[]>([]);
   const [metrics, setMetrics] = useState<Metrics | null>(null);
+
+  // Real-time payment notification banner
+  const [paymentNotification, setPaymentNotification] = useState<{
+    customerName?: string;
+    amount?: number;
+    message?: string;
+    token?: string;
+  } | null>(null);
 
   // Active call state
   const [activeCallId, setActiveCallId] = useState<string | null>(null);
@@ -75,9 +84,25 @@ export function App() {
     }
   }, []);
 
+  // Dynamic background polling (every 4s) to ensure dashboard metrics, calls, and customer statuses stay live
   useEffect(() => {
     loadData();
+    const pollTimer = window.setInterval(() => {
+      fetchMetrics().then(setMetrics).catch(() => {});
+      fetchCalls().then(setCalls).catch(() => {});
+      fetchCustomers().then(setCustomers).catch(() => {});
+    }, 4000);
+    return () => window.clearInterval(pollTimer);
   }, [loadData]);
+
+  // Auto-dismiss payment notification banner after 10 seconds
+  useEffect(() => {
+    if (!paymentNotification) return;
+    const timer = setTimeout(() => {
+      setPaymentNotification(null);
+    }, 10000);
+    return () => clearTimeout(timer);
+  }, [paymentNotification]);
 
   // Sync active call details from backend (hydrates turns, tool calls, guardrails)
   const syncCallDetails = useCallback(async (callId: string) => {
@@ -241,6 +266,25 @@ export function App() {
         timestamp: msg.timestamp || now,
       };
       setMessages((prev) => [mItem, ...prev.filter((m) => m.sid !== mItem.sid)]);
+    } else if (type === 'payment.confirmed') {
+      const custName = msg.customer_name || 'Customer';
+      const amt = msg.amount || undefined;
+      const textMsg = msg.message || `Payment of ₹${amt || ''} received from ${custName} via SMS link`;
+      setPaymentNotification({
+        customerName: custName,
+        amount: amt,
+        message: textMsg,
+        token: msg.token,
+      });
+      setCallState((prev) => ({
+        ...prev,
+        stage: 'resolved',
+        terminal_outcome: 'recovered',
+        outcome_note: textMsg,
+      }));
+      fetchCalls().then(setCalls);
+      fetchMetrics().then(setMetrics);
+      fetchCustomers().then(setCustomers);
     } else if (type === 'link.event') {
       const lItem: LinkEvent = {
         token: msg.token || msg.payload?.token || '',
@@ -250,8 +294,23 @@ export function App() {
       };
       setLinkEvents((prev) => [lItem, ...prev]);
       if (msg.event === 'paid') {
+        const custName = msg.customer_name || 'Customer';
+        const amt = msg.amount || undefined;
+        setPaymentNotification({
+          customerName: custName,
+          amount: amt,
+          message: `Payment confirmed from ${custName} via SMS link`,
+          token: msg.token,
+        });
+        setCallState((prev) => ({
+          ...prev,
+          stage: 'resolved',
+          terminal_outcome: 'recovered',
+          outcome_note: `Paid via SMS link`,
+        }));
         fetchCalls().then(setCalls);
         fetchMetrics().then(setMetrics);
+        fetchCustomers().then(setCustomers);
       }
     } else if (type === 'batch.progress') {
       setBatchProgress({
@@ -333,6 +392,37 @@ export function App() {
       />
 
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 py-6">
+        {/* Real-time Payment Confirmation Alert */}
+        {paymentNotification && (
+          <div className="mb-6 bg-gradient-to-r from-emerald-950/90 via-emerald-900/80 to-slate-900 border border-emerald-500/60 rounded-xl p-4 shadow-xl flex items-center justify-between transition-all">
+            <div className="flex items-center gap-3.5">
+              <div className="w-10 h-10 rounded-full bg-emerald-500/20 border border-emerald-500/50 flex items-center justify-center text-emerald-400 shrink-0">
+                <CheckCircle2 className="w-6 h-6 animate-pulse" />
+              </div>
+              <div>
+                <div className="text-sm font-bold text-white flex items-center gap-2">
+                  <span>Payment Confirmed via SMS Link!</span>
+                  {paymentNotification.amount !== undefined && paymentNotification.amount > 0 && (
+                    <span className="bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded text-xs border border-emerald-500/30 font-semibold font-mono">
+                      ₹{paymentNotification.amount.toLocaleString('en-IN')}
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-emerald-200/90 mt-0.5">
+                  {paymentNotification.message || `Account settled for ${paymentNotification.customerName || 'customer'}. Dashboard metrics updated dynamically.`}
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() => setPaymentNotification(null)}
+              className="text-emerald-400/80 hover:text-white p-1.5 rounded-lg hover:bg-emerald-800/40 transition shrink-0"
+              title="Dismiss"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+        )}
+
         {activeTab === 'overview' && (
           <OverviewTab
             metrics={metrics}
