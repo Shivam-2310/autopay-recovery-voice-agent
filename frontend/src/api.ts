@@ -92,3 +92,12 @@ export async function fetchListenToken(callId: string): Promise<{ token: string;
   if (!res.ok) throw new Error(`Failed to fetch listen token for ${callId}`);
   return res.json();
 }
+
+export async function resetDemoData(): Promise<{ status: string; message: string }> {
+  const res = await fetch(`${BASE_URL}/api/demo/reset`, {
+    method: 'POST',
+  });
+  if (!res.ok) throw new Error(`Failed to reset demo data: ${res.statusText}`);
+  return res.json();
+}
+

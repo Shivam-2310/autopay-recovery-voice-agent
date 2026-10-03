@@ -617,5 +617,23 @@ def get_outcomes(customer_id: str | None = None, db_path: Path = DB_PATH) -> lis
         return [dict(row) for row in rows]
 
 
+def reset_demo_data(db_path: Path = DB_PATH) -> dict[str, Any]:
+    """Wipe calls, turns, events, messages, link_events, outcomes, and reset customer states for a clean presentation demo."""
+    with get_conn(db_path) as conn:
+        conn.execute("DELETE FROM turns")
+        conn.execute("DELETE FROM events")
+        conn.execute("DELETE FROM messages")
+        conn.execute("DELETE FROM link_events")
+        conn.execute("DELETE FROM outcomes")
+        conn.execute("DELETE FROM calls")
+        conn.execute("""
+            UPDATE customers_state
+            SET last_call_at = NULL,
+                last_outcome = NULL,
+                do_not_call = 0
+        """)
+    return {"status": "ok", "message": "Demo data wiped clean"}
+
+
 # Auto-init on import
 init_db()

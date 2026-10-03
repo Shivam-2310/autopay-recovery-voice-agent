@@ -16,6 +16,7 @@ import {
   triggerBatchCalls,
   cancelBatchCalls,
   endCall,
+  resetDemoData,
 } from './api';
 import type {
   SystemConfig,
@@ -117,16 +118,31 @@ export function App() {
 
       if (Array.isArray(details.turns) && details.turns.length > 0) {
         setTurns((prev) => {
-          // If server has more or different turns, merge
-          const serverTurns: Turn[] = details.turns.map((t: any, idx: number) => ({
+          const rawServerTurns: Turn[] = details.turns.map((t: any, idx: number) => ({
             id: `turn_db_${idx}_${t.timestamp || idx}`,
             speaker: t.speaker === 'customer' ? 'customer' : 'agent',
             text: t.text || '',
             is_final: Boolean(t.is_final),
             timestamp: t.timestamp || new Date().toLocaleTimeString(),
           }));
-          if (serverTurns.length >= prev.length) {
-            return serverTurns;
+
+          // Strict consecutive deduplication for turns
+          const dedupedServer: Turn[] = [];
+          for (const st of rawServerTurns) {
+            const stNorm = st.text.toLowerCase().replace(/[^\w\s]/g, '').trim();
+            if (!stNorm) continue;
+            if (dedupedServer.length > 0) {
+              const last = dedupedServer[dedupedServer.length - 1];
+              const lastNorm = last.text.toLowerCase().replace(/[^\w\s]/g, '').trim();
+              if (last.speaker === st.speaker && lastNorm === stNorm) {
+                continue;
+              }
+            }
+            dedupedServer.push(st);
+          }
+
+          if (dedupedServer.length >= prev.length) {
+            return dedupedServer;
           }
           return prev;
         });
@@ -203,6 +219,9 @@ export function App() {
       const text = (p.text || '').trim();
       if (!text) return;
 
+      const norm = text.toLowerCase().replace(/[^\w\s]/g, '').trim();
+      if (!norm) return;
+
       const newTurn: Turn = {
         id: `turn_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
         speaker,
@@ -215,7 +234,8 @@ export function App() {
         // Prevent duplicate append of identical message from same speaker
         if (prev.length > 0) {
           const last = prev[prev.length - 1];
-          if (last.speaker === speaker && last.text.toLowerCase() === text.toLowerCase()) {
+          const lastNorm = last.text.toLowerCase().replace(/[^\w\s]/g, '').trim();
+          if (last.speaker === speaker && lastNorm === norm) {
             return prev;
           }
         }
@@ -327,6 +347,29 @@ export function App() {
       fetchCalls().then(setCalls);
       fetchMetrics().then(setMetrics);
       fetchCustomers().then(setCustomers);
+    } else if (type === 'demo.reset') {
+      setCalls([]);
+      setTurns([]);
+      setGuardrails([]);
+      setToolCalls([]);
+      setMessages([]);
+      setLinkEvents([]);
+      setActiveCallId(null);
+      setActiveCallStatus('idle');
+      setPaymentNotification(null);
+      setBatchProgress(null);
+      setCallState({
+        stage: 'init',
+        verified: false,
+        verification_attempts: 0,
+        offers_made: 0,
+        terminal_outcome: undefined,
+        outcome_note: undefined,
+        do_not_call: false,
+      });
+      fetchCalls().then(setCalls);
+      fetchMetrics().then(setMetrics);
+      fetchCustomers().then(setCustomers);
     }
   }, []);
 
@@ -335,6 +378,38 @@ export function App() {
   });
 
   // Action Handlers
+  const handleResetDemo = async () => {
+    try {
+      await resetDemoData();
+      setCalls([]);
+      setTurns([]);
+      setGuardrails([]);
+      setToolCalls([]);
+      setMessages([]);
+      setLinkEvents([]);
+      setActiveCallId(null);
+      setActiveCallStatus('idle');
+      setPaymentNotification(null);
+      setBatchProgress(null);
+      setCallState({
+        stage: 'init',
+        verified: false,
+        verification_attempts: 0,
+        offers_made: 0,
+        terminal_outcome: undefined,
+        outcome_note: undefined,
+        do_not_call: false,
+      });
+      await Promise.all([
+        fetchCalls().then(setCalls),
+        fetchMetrics().then(setMetrics),
+        fetchCustomers().then(setCustomers),
+      ]);
+    } catch (err: any) {
+      alert(`Could not reset demo data: ${err.message}`);
+    }
+  };
+
   const handleCallCustomer = async (customerId: string) => {
     const cust = customers.find((c) => c.id === customerId);
     setActiveCustomerName(cust?.name || customerId);
@@ -389,6 +464,7 @@ export function App() {
         activeTab={activeTab}
         setActiveTab={setActiveTab}
         hasActiveCall={activeCallStatus === 'active'}
+        onResetDemo={handleResetDemo}
       />
 
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 py-6">

@@ -872,6 +872,28 @@ async def complete_mock_payment(token: str) -> dict[str, Any]:
     return {"status": "paid", "token": token, "amount": amount_due, "customer": customer_name}
 
 
+@app.post("/api/demo/reset")
+async def reset_demo_endpoint() -> dict[str, Any]:
+    """Wipe all call logs, metrics, link events, and messages to start a clean presentation demo."""
+    from src.db import reset_demo_data, get_call_metrics
+    res = reset_demo_data()
+    _active_batches.clear()
+
+    # Broadcast updated metrics and reset signal to all connected dashboard clients
+    metrics = get_call_metrics()
+    await ws_manager.broadcast({
+        "type": "metrics.update",
+        "metrics": metrics,
+        "timestamp": datetime.now(UTC).isoformat(),
+    })
+    await ws_manager.broadcast({
+        "type": "demo.reset",
+        "timestamp": datetime.now(UTC).isoformat(),
+    })
+    logger.info("Demo data reset successfully: database purged for fresh demonstration.")
+    return res
+
+
 # ── WebSocket Telemetry Stream ────────────────────────────────────────────────
 @app.websocket("/ws")
 async def websocket_telemetry(websocket: WebSocket) -> None:

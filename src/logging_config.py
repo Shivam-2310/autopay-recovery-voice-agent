@@ -48,12 +48,17 @@ def setup_logging(service_name: str = "voice-agent", log_level: int = logging.IN
     root_logger = logging.getLogger()
     root_logger.setLevel(log_level)
 
-    # Avoid duplicate handlers on re-init
+    # Prevent duplicate handlers on re-init
     for h in list(root_logger.handlers):
-        if isinstance(h, (RotatingFileHandler, logging.StreamHandler)):
-            root_logger.removeHandler(h)
+        root_logger.removeHandler(h)
 
-    # 1. Console stream handler
+    # Suppress duplicate handlers in child loggers like livekit
+    for child_name in ("livekit", "livekit.agents", "livekit.plugins"):
+        child = logging.getLogger(child_name)
+        child.handlers.clear()
+        child.propagate = True
+
+    # 1. Console stream handler (single instance)
     console_handler = logging.StreamHandler()
     console_handler.setLevel(log_level)
     console_handler.setFormatter(formatter)
@@ -83,7 +88,6 @@ def setup_logging(service_name: str = "voice-agent", log_level: int = logging.IN
             )
         )
 
-    root_logger.info("Logging initialized for %s -> %s", service_name, log_file)
     return log_file
 
 

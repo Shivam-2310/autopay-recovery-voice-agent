@@ -433,10 +433,17 @@ async def entrypoint(ctx: JobContext) -> None:
 
     transcript_lines: list[str] = []
     seen_turns: set[str] = set()
+    last_turn_by_speaker: dict[str, str] = {}
+    customer_requested_link = False
     call_start_time = asyncio.get_event_loop().time()
 
+    def _normalize_for_dedup(txt: str) -> str:
+        """Strip punctuation and extra whitespace for fuzzy turn deduplication."""
+        return re.sub(r"[^\w\s]", "", (txt or "").lower()).strip()
+
     def record_turn(speaker: str, text: str) -> None:
-        """Unified turn recording with deduplication and guardrail checking."""
+        """Unified turn recording with strict consecutive and normalized deduplication."""
+        nonlocal customer_requested_link
         clean_text = (text or "").strip()
         if speaker == "agent":
             clean_text = re.sub(r"\[INTERNAL[^\]]*\]\s*", "", clean_text)
@@ -444,10 +451,18 @@ async def entrypoint(ctx: JobContext) -> None:
             clean_text = re.sub(r"\[[^\]]*\]\s*", "", clean_text).strip()
         if not clean_text:
             return
-        dedup_key = f"{speaker}:{clean_text.lower()}"
-        if dedup_key in seen_turns:
+
+        norm = _normalize_for_dedup(clean_text)
+        if not norm:
             return
-        seen_turns.add(dedup_key)
+
+        # Consecutive duplicate check for the same speaker (e.g. STT transcribed vs conversation_item_added)
+        if last_turn_by_speaker.get(speaker) == norm:
+            logger.info("Suppressed duplicate %s turn: '%s'", speaker, clean_text[:40])
+            return
+
+        last_turn_by_speaker[speaker] = norm
+        seen_turns.add(f"{speaker}:{norm}")
 
         logger.info(">>> [%s] %s", speaker.upper(), clean_text)
         _post_internal_event(call_id, "turn", {"speaker": speaker, "text": clean_text, "is_final": True})
@@ -457,6 +472,12 @@ async def entrypoint(ctx: JobContext) -> None:
         transcript_lines.append(f"{speaker}: {redacted}")
 
         if speaker == "customer":
+            # Track customer asking for SMS payment link
+            if call_state.verified and not call_state.sms_sent:
+                if re.search(r"\b(share|send|give|sms|text)\b.*\b(link|payment|url)\b|\b(send|share)\s+(it|the link|link)\b", clean_text.lower()):
+                    logger.info("Detected customer request for payment link: '%s'", clean_text)
+                    customer_requested_link = True
+
             # Check guardrails on user input
             if detect_do_not_call(clean_text):
                 call_state.do_not_call = True
@@ -517,10 +538,60 @@ async def entrypoint(ctx: JobContext) -> None:
 
         if role == "assistant":
             record_turn("agent", text)
-            # If terminal outcome was reached, schedule clean room disconnect after speaking
-            if call_state.is_terminal():
-                logger.info("Terminal outcome reached (%s). Closing room in 3s...", call_state.terminal_outcome)
-                asyncio.create_task(_delayed_disconnect(ctx, delay=3.0))
+            text_lower = text.lower()
+
+            # Safety Net: If the agent verbally states that it sent the payment link,
+            # or customer previously requested it while verified, ensure SMS is physically dispatched
+            link_spoken_keywords = [
+                "sent the secure payment link",
+                "sent you a secure payment link",
+                "sent the payment link",
+                "sent you the payment link",
+                "sent a payment link",
+                "sent the link",
+                "sent a link",
+            ]
+            spoke_sent_link = any(kw in text_lower for kw in link_spoken_keywords)
+
+            if (spoke_sent_link or customer_requested_link) and call_state.verified and not call_state.sms_sent:
+                logger.warning(
+                    "Deterministic Fallback Triggered: Agent confirmed link or customer requested link, "
+                    "but send_payment_link tool was bypassed by LLM. Executing dispatch now..."
+                )
+                amt = float(customer.get("amount_due", 0.0))
+                fname = customer.get("first_name") or customer.get("name", "").split()[0]
+                sms_res = _send_sms_via_api(
+                    call_id=call_id,
+                    customer_id=customer["id"],
+                    first_name=fname,
+                    amount=amt,
+                    phone_number=target_phone,
+                )
+                call_state.offers_made += 1
+                call_state.sms_sent = True
+                call_state.terminal_outcome = "link_sent"
+                call_state.outcome_note = "Payment link sent via SMS"
+                call_state.stage = "terminal"
+
+                _post_internal_event(call_id, "tool.call", {
+                    "tool": "send_payment_link",
+                    "status": "success",
+                    "customer_id": customer["id"],
+                    "result": sms_res,
+                })
+                _post_internal_event(call_id, "state.update", {
+                    "stage": call_state.stage,
+                    "offers_made": call_state.offers_made,
+                    "terminal_outcome": call_state.terminal_outcome,
+                    "outcome_note": call_state.outcome_note,
+                    "sms_sent": True,
+                })
+
+            # Check for farewell or terminal conclusion before disconnecting
+            farewell = bool(re.search(r"\b(goodbye|bye|have a (great|wonderful|good) day)\b", text_lower))
+            if farewell or call_state.terminal_outcome in ("wrong_party", "verification_failed"):
+                logger.info("Call wrap-up detected (outcome=%s, farewell=%s). Closing room cleanly in 4s...", call_state.terminal_outcome, farewell)
+                asyncio.create_task(_delayed_disconnect(ctx, delay=4.0))
         elif role == "user":
             record_turn("customer", text)
 
@@ -534,7 +605,7 @@ async def entrypoint(ctx: JobContext) -> None:
         duration = asyncio.get_event_loop().time() - call_start_time
         full_transcript = "\n".join(transcript_lines)
 
-        final_outcome = call_state.terminal_outcome or "declined"
+        final_outcome = call_state.terminal_outcome or ("link_sent" if call_state.sms_sent else "declined")
         note = call_state.outcome_note or f"Call ended ({reason})"
 
         logger.info("Call session concluded (%s): duration=%.1fs, outcome=%s, note=%s", reason, duration, final_outcome, note)
@@ -557,7 +628,10 @@ async def entrypoint(ctx: JobContext) -> None:
         logger.info("Room disconnected: %s", ctx.room.name)
         emit_call_ended("room_disconnected")
 
-    ctx.add_shutdown_callback(lambda: emit_call_ended("shutdown"))
+    async def _on_shutdown(reason: str | None = None) -> None:
+        emit_call_ended("shutdown")
+
+    ctx.add_shutdown_callback(_on_shutdown)
 
     try:
         @session.on("close")

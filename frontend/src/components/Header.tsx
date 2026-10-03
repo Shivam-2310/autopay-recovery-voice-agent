@@ -1,5 +1,5 @@
-import React from 'react';
-import { Phone, Radio, AlertTriangle, MessageSquare, History, LayoutDashboard } from 'lucide-react';
+import React, { useState } from 'react';
+import { Phone, Radio, AlertTriangle, MessageSquare, History, LayoutDashboard, RotateCcw } from 'lucide-react';
 import type { SystemConfig } from '../types';
 import type { WebSocketStatus } from '../hooks/useWebSocket';
 
@@ -9,6 +9,7 @@ interface HeaderProps {
   activeTab: 'overview' | 'live' | 'messages' | 'history';
   setActiveTab: (tab: 'overview' | 'live' | 'messages' | 'history') => void;
   hasActiveCall: boolean;
+  onResetDemo?: () => Promise<void>;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -17,7 +18,22 @@ export const Header: React.FC<HeaderProps> = ({
   activeTab,
   setActiveTab,
   hasActiveCall,
+  onResetDemo,
 }) => {
+  const [isResetting, setIsResetting] = useState(false);
+
+  const handleResetClick = async () => {
+    if (!onResetDemo) return;
+    const ok = window.confirm("Reset all test calls, SMS dispatches, and metrics to 0 for a clean presentation demo?");
+    if (!ok) return;
+    setIsResetting(true);
+    try {
+      await onResetDemo();
+    } finally {
+      setIsResetting(false);
+    }
+  };
+
   const getStatusColor = () => {
     switch (wsStatus) {
       case 'connected': return 'bg-emerald-500';
@@ -140,6 +156,18 @@ export const Header: React.FC<HeaderProps> = ({
             Call History
           </button>
         </nav>
+
+        {onResetDemo && (
+          <button
+            onClick={handleResetClick}
+            disabled={isResetting}
+            title="Purge past test calls, SMS logs, and metrics to start a fresh presentation demo"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-rose-300 bg-rose-950/60 border border-rose-800/60 hover:bg-rose-900/60 hover:border-rose-600 transition shadow-sm active:scale-95 disabled:opacity-50"
+          >
+            <RotateCcw className={`w-3.5 h-3.5 ${isResetting ? 'animate-spin' : ''}`} />
+            {isResetting ? 'Resetting...' : 'Reset Demo'}
+          </button>
+        )}
       </div>
     </header>
   );

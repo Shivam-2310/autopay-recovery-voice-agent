@@ -73,10 +73,22 @@ export const LiveCallTab: React.FC<LiveCallTabProps> = ({
     return () => window.clearInterval(interval);
   }, [callId, status]);
 
+  // Deduplicate consecutive identical turns from the same speaker
+  const uniqueTurns = turns.filter((turn, idx) => {
+    if (idx === 0) return true;
+    const prevTurn = turns[idx - 1];
+    const currNorm = (turn.text || '').toLowerCase().replace(/[^\w\s]/g, '').trim();
+    const prevNorm = (prevTurn.text || '').toLowerCase().replace(/[^\w\s]/g, '').trim();
+    if (turn.speaker === prevTurn.speaker && currNorm === prevNorm) {
+      return false;
+    }
+    return true;
+  });
+
   // Auto-scroll transcript
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [turns]);
+  }, [uniqueTurns]);
 
   // Live Listen Audio Lifecycle (Step 8)
   const startLiveListen = async () => {
@@ -411,13 +423,13 @@ export const LiveCallTab: React.FC<LiveCallTabProps> = ({
 
         {/* Chat History View */}
         <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-slate-950/30">
-          {turns.length === 0 ? (
+          {uniqueTurns.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-slate-500 text-xs">
               <Loader2 className="w-6 h-6 animate-spin text-sky-400 mb-2" />
               <span>Awaiting phone connection and speech stream...</span>
             </div>
           ) : (
-            turns.map((turn, idx) => {
+            uniqueTurns.map((turn, idx) => {
               const isAgent = turn.speaker === 'agent';
               return (
                 <div

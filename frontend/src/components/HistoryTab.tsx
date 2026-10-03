@@ -177,40 +177,62 @@ export const HistoryTab: React.FC<HistoryTabProps> = ({ calls, onRefresh }) => {
             </div>
 
             <div className="p-6 overflow-y-auto space-y-3 bg-slate-950/40 text-xs font-sans">
-              {(selectedCall.transcript || '').split('\n').filter(Boolean).map((line, idx) => {
-                const isAgent = line.startsWith('agent:') || line.startsWith('assistant:');
-                const cleanText = line.replace(/^(agent|assistant|customer|user):\s*/i, '');
+              {(() => {
+                const rawLines = (selectedCall.transcript || '').split('\n').filter(Boolean);
+                const uniqueLines: string[] = [];
+                for (const line of rawLines) {
+                  const isAgent = line.startsWith('agent:') || line.startsWith('assistant:');
+                  const cleanText = line.replace(/^(agent|assistant|customer|user):\s*/i, '');
+                  const norm = cleanText.toLowerCase().replace(/[^\w\s]/g, '').trim();
+                  if (!norm) continue;
 
-                return (
-                  <div
-                    key={idx}
-                    className={`flex items-start gap-2.5 ${isAgent ? 'justify-start' : 'justify-end'}`}
-                  >
-                    {isAgent && (
-                      <div className="w-6 h-6 rounded-full bg-sky-600 text-white flex items-center justify-center shrink-0 mt-0.5">
-                        <Bot className="w-3.5 h-3.5" />
-                      </div>
-                    )}
+                  if (uniqueLines.length > 0) {
+                    const prev = uniqueLines[uniqueLines.length - 1];
+                    const prevIsAgent = prev.startsWith('agent:') || prev.startsWith('assistant:');
+                    const prevClean = prev.replace(/^(agent|assistant|customer|user):\s*/i, '');
+                    const prevNorm = prevClean.toLowerCase().replace(/[^\w\s]/g, '').trim();
+                    if (prevIsAgent === isAgent && prevNorm === norm) {
+                      continue;
+                    }
+                  }
+                  uniqueLines.push(line);
+                }
+
+                return uniqueLines.map((line, idx) => {
+                  const isAgent = line.startsWith('agent:') || line.startsWith('assistant:');
+                  const cleanText = line.replace(/^(agent|assistant|customer|user):\s*/i, '');
+
+                  return (
                     <div
-                      className={`max-w-[85%] rounded-2xl px-4 py-2.5 leading-relaxed shadow-sm ${
-                        isAgent
-                          ? 'bg-slate-800 text-slate-200 rounded-tl-sm border border-slate-700/60'
-                          : 'bg-sky-600 text-white rounded-tr-sm'
-                      }`}
+                      key={idx}
+                      className={`flex items-start gap-2.5 ${isAgent ? 'justify-start' : 'justify-end'}`}
                     >
-                      <div className="font-semibold text-[10px] uppercase tracking-wider mb-1 opacity-70">
-                        {isAgent ? 'Aanya (AI Assistant)' : 'Customer'}
+                      {isAgent && (
+                        <div className="w-6 h-6 rounded-full bg-sky-600 text-white flex items-center justify-center shrink-0 mt-0.5">
+                          <Bot className="w-3.5 h-3.5" />
+                        </div>
+                      )}
+                      <div
+                        className={`max-w-[85%] rounded-2xl px-4 py-2.5 leading-relaxed shadow-sm ${
+                          isAgent
+                            ? 'bg-slate-800 text-slate-200 rounded-tl-sm border border-slate-700/60'
+                            : 'bg-sky-600 text-white rounded-tr-sm'
+                        }`}
+                      >
+                        <div className="font-semibold text-[10px] uppercase tracking-wider mb-1 opacity-70">
+                          {isAgent ? 'Aanya (AI Assistant)' : 'Customer'}
+                        </div>
+                        <div>{cleanText}</div>
                       </div>
-                      <div>{cleanText}</div>
+                      {!isAgent && (
+                        <div className="w-6 h-6 rounded-full bg-slate-700 text-slate-200 flex items-center justify-center shrink-0 mt-0.5">
+                          <User className="w-3.5 h-3.5" />
+                        </div>
+                      )}
                     </div>
-                    {!isAgent && (
-                      <div className="w-6 h-6 rounded-full bg-slate-700 text-slate-200 flex items-center justify-center shrink-0 mt-0.5">
-                        <User className="w-3.5 h-3.5" />
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
+                  );
+                });
+              })()}
             </div>
 
             <div className="px-6 py-3 border-t border-slate-800 bg-slate-950 flex items-center justify-between text-xs text-slate-400">
