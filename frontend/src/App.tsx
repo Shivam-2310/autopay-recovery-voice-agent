@@ -10,6 +10,7 @@ import {
   fetchCustomers,
   fetchCalls,
   fetchMetrics,
+  fetchCallDetails,
   triggerCall,
   triggerBatchCalls,
   cancelBatchCalls,
@@ -78,6 +79,78 @@ export function App() {
     loadData();
   }, [loadData]);
 
+  // Sync active call details from backend (hydrates turns, tool calls, guardrails)
+  const syncCallDetails = useCallback(async (callId: string) => {
+    if (!callId) return;
+    try {
+      const details = await fetchCallDetails(callId);
+      if (!details) return;
+
+      if (details.customer_name && !activeCustomerName) {
+        setActiveCustomerName(details.customer_name);
+      }
+
+      if (Array.isArray(details.turns) && details.turns.length > 0) {
+        setTurns((prev) => {
+          // If server has more or different turns, merge
+          const serverTurns: Turn[] = details.turns.map((t: any, idx: number) => ({
+            id: `turn_db_${idx}_${t.timestamp || idx}`,
+            speaker: t.speaker === 'customer' ? 'customer' : 'agent',
+            text: t.text || '',
+            is_final: Boolean(t.is_final),
+            timestamp: t.timestamp || new Date().toLocaleTimeString(),
+          }));
+          if (serverTurns.length >= prev.length) {
+            return serverTurns;
+          }
+          return prev;
+        });
+      }
+
+      if (Array.isArray(details.events) && details.events.length > 0) {
+        const restoredGuardrails: GuardrailEvent[] = [];
+        const restoredToolCalls: ToolCallEvent[] = [];
+        for (const ev of details.events) {
+          const p = ev.payload || {};
+          if (ev.event_type === 'guardrail.triggered') {
+            restoredGuardrails.push({
+              id: p.id || 0,
+              name: p.name || 'Guardrail',
+              action: p.action || 'triggered',
+              detail: p.detail || p.error,
+              timestamp: ev.timestamp || '',
+            });
+          } else if (ev.event_type === 'tool.call') {
+            restoredToolCalls.push({
+              tool: p.tool || 'unknown_tool',
+              status: p.status || 'success',
+              customer_id: p.customer_id || '',
+              timestamp: ev.timestamp || '',
+            });
+          }
+        }
+        if (restoredGuardrails.length > 0) {
+          setGuardrails(restoredGuardrails);
+        }
+        if (restoredToolCalls.length > 0) {
+          setToolCalls(restoredToolCalls);
+        }
+      }
+    } catch (e) {
+      // quiet debug log
+      console.debug('syncCallDetails error:', e);
+    }
+  }, [activeCustomerName]);
+
+  // Periodic polling for active call to guarantee live transcript sync
+  useEffect(() => {
+    if (activeCallStatus !== 'active' || !activeCallId) return;
+    const interval = window.setInterval(() => {
+      syncCallDetails(activeCallId);
+    }, 2000);
+    return () => window.clearInterval(interval);
+  }, [activeCallStatus, activeCallId, syncCallDetails]);
+
   // WebSocket message dispatcher
   const handleWsMessage = useCallback((msg: any) => {
     const type = msg.type;
@@ -90,35 +163,39 @@ export function App() {
         setActiveCallId(cid);
         setActiveCallStatus('active');
         setActiveTab('live');
-        // Reset call state
-        setTurns([]);
-        setGuardrails([]);
-        setToolCalls([]);
-        setCallState({
-          stage: 'init',
-          verified: false,
-          verification_attempts: 0,
-          offers_made: 0,
-          terminal_outcome: undefined,
-          outcome_note: undefined,
-          do_not_call: false,
-        });
+        // Hydrate from DB immediately
+        syncCallDetails(cid);
       } else if (status === 'completed' || status === 'terminated') {
         setActiveCallStatus('completed');
+        if (cid) syncCallDetails(cid);
         fetchCalls().then(setCalls);
         fetchMetrics().then(setMetrics);
         fetchCustomers().then(setCustomers);
       }
     } else if (type === 'turn') {
       const p = msg.payload || {};
+      const speaker = p.speaker === 'customer' ? 'customer' : 'agent';
+      const text = (p.text || '').trim();
+      if (!text) return;
+
       const newTurn: Turn = {
         id: `turn_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-        speaker: p.speaker || 'agent',
-        text: p.text || '',
+        speaker,
+        text,
         is_final: p.is_final ?? true,
         timestamp: msg.timestamp || now,
       };
-      setTurns((prev) => [...prev, newTurn]);
+
+      setTurns((prev) => {
+        // Prevent duplicate append of identical message from same speaker
+        if (prev.length > 0) {
+          const last = prev[prev.length - 1];
+          if (last.speaker === speaker && last.text.toLowerCase() === text.toLowerCase()) {
+            return prev;
+          }
+        }
+        return [...prev, newTurn];
+      });
     } else if (type === 'tool.call') {
       const p = msg.payload || {};
       setToolCalls((prev) => [

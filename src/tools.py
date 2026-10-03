@@ -7,6 +7,7 @@ Enforces the first-terminal-outcome-wins rule and blocks payment tools before id
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -78,7 +79,7 @@ def make_tools(
         """
         logger.info("Tool: verify_identity called for customer %s", state.customer_id)
         if state.is_terminal():
-            return "Call outcome has already been decided. Politely conclude the call."
+            return "[INTERNAL STATUS: Call outcome is already finalized.]"
 
         state.verification_attempts += 1
         expected_year = state.customer_record.get("birth_year")
@@ -100,10 +101,9 @@ def make_tools(
             bank = state.customer_record.get("bank_name", "your bank")
 
             return (
-                f"Identity verified successfully. The account details are: "
-                f"autopay payment of {amt_spoken} scheduled for {date_spoken} could not be completed "
-                f"due to {reason_spoken} from {bank}. "
-                f"Now politely explain this failure and offer to retry the payment or send a secure link."
+                f"[INTERNAL STATUS: Identity verified successfully.] "
+                f"Account data: Autopay payment of {amt_spoken} scheduled for {date_spoken} "
+                f"from {bank} could not be completed due to {reason_spoken}."
             )
 
         # Verification failed
@@ -113,10 +113,7 @@ def make_tools(
                 "verified": False,
                 "verification_attempts": state.verification_attempts,
             })
-            return (
-                "The birth year provided does not match our records. "
-                "Politely ask the customer to re-confirm their 4-digit birth year (attempt 2 of 2)."
-            )
+            return "[INTERNAL STATUS: Verification failed. Birth year does not match records (attempt 2 of 2).]"
 
         # Reached max attempts -> terminal failure
         state.terminal_outcome = "verification_failed"
@@ -128,10 +125,7 @@ def make_tools(
             "terminal_outcome": state.terminal_outcome,
             "outcome_note": state.outcome_note,
         })
-        return (
-            "Verification failed twice. For privacy and security reasons, inform the customer "
-            "that you cannot proceed without verification, thank them politely, and end the call."
-        )
+        return "[INTERNAL STATUS: Verification failed twice. Maximum verification attempts exceeded. Call must end.]"
 
     @tool
     def retry_payment() -> str:
@@ -146,9 +140,9 @@ def make_tools(
         """
         logger.info("Tool: retry_payment called for customer %s", state.customer_id)
         if not state.verified:
-            return "Error: Identity is not verified. You must verify identity with birth year first."
+            return "[INTERNAL ERROR: Identity is not verified. You must verify identity with birth year first.]"
         if state.is_terminal():
-            return "Call outcome is already finalized. Conclude the conversation."
+            return "[INTERNAL STATUS: Call outcome is already finalized.]"
 
         reason = state.customer_record.get("failure_reason", "")
         if reason in ("insufficient_funds", "bank_timeout"):
@@ -160,16 +154,10 @@ def make_tools(
                 "terminal_outcome": state.terminal_outcome,
                 "outcome_note": state.outcome_note,
             })
-            return (
-                "Payment retry succeeded! The payment has been successfully debited from the customer's account. "
-                "Confirm this success with the customer, thank them, and politely say goodbye."
-            )
+            return "[INTERNAL STATUS: Payment retry succeeded! Direct account debit completed successfully.]"
 
         # Cannot retry for expired mandates or bank declines
-        return (
-            "The direct payment retry was declined by the bank or the mandate is no longer active. "
-            "Explain this to the customer and offer to send a secure payment link via SMS instead."
-        )
+        return "[INTERNAL STATUS: Payment retry declined by bank. Mandate expired or inactive.]"
 
     @tool
     def send_payment_link() -> str:
@@ -182,9 +170,9 @@ def make_tools(
         """
         logger.info("Tool: send_payment_link called for customer %s", state.customer_id)
         if not state.verified:
-            return "Error: Identity is not verified. You must verify identity with birth year first."
+            return "[INTERNAL ERROR: Identity is not verified. You must verify identity with birth year first.]"
         if state.is_terminal():
-            return "Call outcome is already finalized. Conclude the conversation."
+            return "[INTERNAL STATUS: Call outcome is already finalized.]"
 
         # Guardrail 10: Truth in delivery
         if send_sms_fn:
@@ -201,11 +189,7 @@ def make_tools(
                     "action": "offer_callback_on_sms_failure",
                     "error": sms_res.get("error", "SMS dispatch failed"),
                 })
-                return (
-                    "The SMS delivery system encountered a temporary error and the payment link could not be sent. "
-                    "Inform the customer politely that the link could not be delivered right now, "
-                    "and offer to schedule a callback instead."
-                )
+                return "[INTERNAL ERROR: SMS delivery failed due to network error.]"
 
         state.offers_made += 1
         state.sms_sent = True
@@ -225,11 +209,7 @@ def make_tools(
             "customer_id": state.customer_id,
         })
 
-        return (
-            "The payment link has been dispatched to the customer's registered phone number via SMS. "
-            "Inform them that the link is valid for 24 hours, ask if they have any other questions, "
-            "and politely conclude the call."
-        )
+        return "[INTERNAL STATUS: Payment link sent successfully via SMS. Valid for 24 hours.]"
 
     @tool
     def schedule_callback(preferred_time: str) -> str:
@@ -243,7 +223,7 @@ def make_tools(
         """
         logger.info("Tool: schedule_callback called for %s at %s", state.customer_id, preferred_time)
         if state.is_terminal():
-            return "Call outcome is already finalized. Conclude the conversation."
+            return "[INTERNAL STATUS: Call outcome is already finalized.]"
 
         state.offers_made += 1
         state.terminal_outcome = "scheduled"
@@ -257,10 +237,7 @@ def make_tools(
             "outcome_note": state.outcome_note,
         })
 
-        return (
-            f"Callback has been successfully scheduled for {preferred_time}. "
-            f"Confirm this appointment with the customer, thank them, and politely conclude the call."
-        )
+        return f"[INTERNAL STATUS: Callback scheduled successfully for {preferred_time}.]"
 
     @tool
     def escalate(reason: str) -> str:
@@ -274,7 +251,7 @@ def make_tools(
         """
         logger.info("Tool: escalate called for %s reason: %s", state.customer_id, reason)
         if state.is_terminal():
-            return "Call outcome is already finalized. Conclude the conversation."
+            return "[INTERNAL STATUS: Call outcome is already finalized.]"
 
         state.terminal_outcome = "escalate"
         state.outcome_note = f"Escalated: {reason}"
@@ -286,11 +263,7 @@ def make_tools(
             "outcome_note": state.outcome_note,
         })
 
-        return (
-            "The account has been flagged for immediate senior support review. "
-            "Reassure the customer with empathy that a senior specialist will follow up personally, "
-            "thank them, and end the call."
-        )
+        return f"[INTERNAL STATUS: Escalation recorded for: {reason}. Priority specialist assigned.]"
 
     @tool
     def end_call(outcome: Literal["declined", "wrong_party"], note: str) -> str:
@@ -305,7 +278,7 @@ def make_tools(
         """
         logger.info("Tool: end_call called for %s outcome: %s", state.customer_id, outcome)
         if state.is_terminal():
-            return "Call outcome is already finalized. Conclude the conversation."
+            return "[INTERNAL STATUS: Call outcome is already finalized.]"
 
         state.terminal_outcome = outcome
         state.outcome_note = note or f"Call finalized with disposition: {outcome}"
@@ -317,7 +290,7 @@ def make_tools(
             "outcome_note": state.outcome_note,
         })
 
-        return "Call outcome recorded. Say a brief, courteous goodbye and disconnect."
+        return f"[INTERNAL STATUS: Call ended with outcome: {outcome}.]"
 
     return [
         verify_identity,

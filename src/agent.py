@@ -174,6 +174,15 @@ def _build_session(
     return session, agent
 
 
+async def _delayed_disconnect(ctx: JobContext, delay: float = 3.0) -> None:
+    """Cleanly disconnect the room after agent finishes speaking its final turn."""
+    await asyncio.sleep(delay)
+    try:
+        await ctx.room.disconnect()
+    except Exception as e:
+        logger.debug("Delayed disconnect error: %s", e)
+
+
 async def entrypoint(ctx: JobContext) -> None:
     """Handle a single outbound call job."""
     await ctx.connect()
@@ -233,74 +242,96 @@ async def entrypoint(ctx: JobContext) -> None:
     session, agent = _build_session(customer, call_state, emit_fn=_on_event, vad=vad)
 
     transcript_lines: list[str] = []
+    seen_turns: set[str] = set()
     call_start_time = asyncio.get_event_loop().time()
+
+    def record_turn(speaker: str, text: str) -> None:
+        """Unified turn recording with deduplication and guardrail checking."""
+        clean_text = (text or "").strip()
+        if not clean_text:
+            return
+        dedup_key = f"{speaker}:{clean_text.lower()}"
+        if dedup_key in seen_turns:
+            return
+        seen_turns.add(dedup_key)
+
+        logger.info(">>> [%s] %s", speaker.upper(), clean_text)
+        _post_internal_event(call_id, "turn", {"speaker": speaker, "text": clean_text, "is_final": True})
+
+        # Append to in-memory transcript (redacted)
+        redacted = redact_pii_for_transcript(clean_text, birth_year=customer.get("birth_year"))
+        transcript_lines.append(f"{speaker}: {redacted}")
+
+        if speaker == "customer":
+            # Check guardrails on user input
+            if detect_do_not_call(clean_text):
+                call_state.do_not_call = True
+                logger.warning("Guardrail 6 (DND) triggered: customer requested Do Not Call")
+                _post_internal_event(call_id, "guardrail.triggered", {"id": 6, "name": "do_not_call", "action": "set_dnd"})
+                _post_internal_event(call_id, "state.update", {"customer_id": customer["id"], "do_not_call": True})
+
+            has_creds, cred_type = detect_card_or_credentials(clean_text)
+            if has_creds:
+                logger.warning("Guardrail 4 (Credentials Blocker) triggered: %s", cred_type)
+                _post_internal_event(call_id, "guardrail.triggered", {"id": 4, "name": "card_or_credentials_blocker", "action": "block_and_redirect", "detail": cred_type})
+
+            is_dispute, dispute_reason = detect_dispute_or_escalation(clean_text)
+            if is_dispute:
+                logger.info("Guardrail 5 (Dispute/Escalate) triggered: %s", dispute_reason)
+                _post_internal_event(call_id, "guardrail.triggered", {"id": 5, "name": "dispute_hardship_escalate", "action": "flag_escalation", "detail": dispute_reason})
+
+            if detect_wrong_party(clean_text):
+                logger.info("Guardrail 3 (Wrong Party) triggered")
+                _post_internal_event(call_id, "guardrail.triggered", {"id": 3, "name": "wrong_party", "action": "end_call"})
+
+            if detect_prompt_injection(clean_text):
+                logger.warning("Guardrail 8 (Prompt Injection) blocked adversarial input")
+                _post_internal_event(call_id, "guardrail.triggered", {"id": 8, "name": "prompt_injection", "action": "block"})
+
+    @session.on("user_input_transcribed")
+    def on_user_transcribed(ev: Any) -> None:
+        """Fires on every STT transcript. We forward final transcripts."""
+        transcript = getattr(ev, "transcript", "")
+        is_final = getattr(ev, "is_final", False)
+        if not transcript or not is_final:
+            return
+        record_turn("customer", transcript)
 
     @session.on("conversation_item_added")
     def on_item_added(ev: Any) -> None:
-        role = getattr(ev.item, "role", "unknown")
-        text = getattr(ev.item, "text", "") or getattr(ev.item, "content", "")
-        if isinstance(text, list):
-            text = " ".join(str(t) for t in text)
-        if text:
-            # Redact PII in memory
-            redacted = redact_pii_for_transcript(text, birth_year=customer.get("birth_year"))
-            transcript_lines.append(f"{role}: {redacted}")
-
-    @session.on("user_speech_committed")
-    def on_user_speech(ev: Any) -> None:
-        text = getattr(ev, "text", "") or getattr(ev, "content", "")
-        if not text:
+        """Fires when any completed message (user or assistant) is committed to chat history."""
+        item = getattr(ev, "item", None)
+        if item is None:
             return
-        logger.info(">>> Customer spoke: %s", text)
-        _post_internal_event(call_id, "turn", {"speaker": "customer", "text": text, "is_final": True})
+        role = getattr(item, "role", None)
 
-        # Check guardrails on user input
-        if detect_do_not_call(text):
-            call_state.do_not_call = True
-            logger.warning("Guardrail 6 (DND) triggered: customer requested Do Not Call")
-            _post_internal_event(call_id, "guardrail.triggered", {"id": 6, "name": "do_not_call", "action": "set_dnd"})
-            _post_internal_event(call_id, "state.update", {"customer_id": customer["id"], "do_not_call": True})
+        # Extract text — item.text_content strips tool markup in v1.8
+        text = getattr(item, "text_content", None)
+        if text is None:
+            text = getattr(item, "raw_text_content", None)
+        if text is None:
+            content = getattr(item, "content", [])
+            if isinstance(content, list):
+                text = " ".join(str(c) for c in content if isinstance(c, str))
+            else:
+                text = str(content) if content else ""
 
-        has_creds, cred_type = detect_card_or_credentials(text)
-        if has_creds:
-            logger.warning("Guardrail 4 (Credentials Blocker) triggered: %s", cred_type)
-            _post_internal_event(call_id, "guardrail.triggered", {"id": 4, "name": "card_or_credentials_blocker", "action": "block_and_redirect", "detail": cred_type})
+        if not text or not text.strip():
+            return
 
-        is_dispute, dispute_reason = detect_dispute_or_escalation(text)
-        if is_dispute:
-            logger.info("Guardrail 5 (Dispute/Escalate) triggered: %s", dispute_reason)
-            _post_internal_event(call_id, "guardrail.triggered", {"id": 5, "name": "dispute_hardship_escalate", "action": "flag_escalation", "detail": dispute_reason})
-
-        if detect_wrong_party(text):
-            logger.info("Guardrail 3 (Wrong Party) triggered")
-            _post_internal_event(call_id, "guardrail.triggered", {"id": 3, "name": "wrong_party", "action": "end_call"})
-
-        if detect_prompt_injection(text):
-            logger.warning("Guardrail 8 (Prompt Injection) blocked adversarial input")
-            _post_internal_event(call_id, "guardrail.triggered", {"id": 8, "name": "prompt_injection", "action": "block"})
-
-    @session.on("agent_speech_committed")
-    def on_agent_speech(ev: Any) -> None:
-        text = getattr(ev, "text", "") or getattr(ev, "content", "")
-        if text:
-            logger.info("<<< Agent spoke: %s", text)
-            _post_internal_event(call_id, "turn", {"speaker": "agent", "text": text, "is_final": True})
-
-        # If terminal outcome was reached, schedule clean room disconnect after speaking
-        if call_state.is_terminal():
-            logger.info("Terminal outcome reached (%s). Closing room in 3s...", call_state.terminal_outcome)
-            asyncio.create_task(_delayed_disconnect(ctx, delay=3.0))
-
-    async def _delayed_disconnect(job_ctx: JobContext, delay: float = 3.0) -> None:
-        await asyncio.sleep(delay)
-        try:
-            await job_ctx.room.disconnect()
-        except Exception:
-            pass
+        if role == "assistant":
+            record_turn("agent", text)
+            # If terminal outcome was reached, schedule clean room disconnect after speaking
+            if call_state.is_terminal():
+                logger.info("Terminal outcome reached (%s). Closing room in 3s...", call_state.terminal_outcome)
+                asyncio.create_task(_delayed_disconnect(ctx, delay=3.0))
+        elif role == "user":
+            record_turn("customer", text)
 
     @session.on("close")
     def on_close(ev: Any) -> None:
-        logger.info("Call session closed: reason=%s", getattr(ev, "reason", "unknown"))
+        reason = getattr(ev, "reason", "unknown")
+        logger.info("Call session closed: reason=%s", reason)
         duration = asyncio.get_event_loop().time() - call_start_time
         full_transcript = "\n".join(transcript_lines)
 
@@ -353,7 +384,7 @@ async def entrypoint(ctx: JobContext) -> None:
     )
     logger.info("Speaking first turn greeting: %s", greeting)
     _post_internal_event(call_id, "guardrail.triggered", {"id": 1, "name": "ai_and_recording_disclosure", "action": "spoken_turn_one"})
-    _post_internal_event(call_id, "turn", {"speaker": "agent", "text": greeting, "is_final": True})
+    record_turn("agent", greeting)
     await session.say(greeting, allow_interruptions=False)
 
 

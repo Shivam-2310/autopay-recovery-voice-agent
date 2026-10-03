@@ -32,6 +32,21 @@ _EMOJI_RE = re.compile(
 _BULLETS_RE = re.compile(r"^\s*[-*•\d+.]+\s+", re.MULTILINE)
 _RUPEES_CURRENCY_RE = re.compile(r"(?:₹|rs\.?|inr)\s*(\d+(?:,\d+)*(?:\.\d+)?)", re.IGNORECASE)
 
+# Patterns for internal meta-instructions or tool return leakage
+_INTERNAL_JSON_RE = re.compile(r"\{[^{}]*\"status\"[^{}]*\}", re.DOTALL)
+_INTERNAL_LEAKAGE_RE = re.compile(
+    r"(?:The payment link has been dispatched to the customer's registered phone number via SMS\.?|"
+    r"Inform them that the link is valid for 24 hours[^.]*\.?|"
+    r"Now politely explain this failure[^.]*\.?|"
+    r"Politely ask the customer to re-confirm[^.]*\.?|"
+    r"For privacy and security reasons, inform the customer[^.]*\.?|"
+    r"Confirm this success with the customer[^.]*\.?|"
+    r"Explain this to the customer and offer[^.]*\.?|"
+    r"Say a brief, courteous goodbye[^.]*\.?|"
+    r"VERIFICATION_\w+|LINK_SENT_\w+|RETRY_\w+|CALLBACK_\w+|ESCALATION_\w+)",
+    re.IGNORECASE,
+)
+
 
 def sanitize_tts_text(text: str) -> str:
     """Sanitize and normalize text before speech synthesis."""
@@ -39,6 +54,10 @@ def sanitize_tts_text(text: str) -> str:
         return ""
 
     cleaned = text
+
+    # Strip raw JSON tool returns or internal status strings
+    cleaned = _INTERNAL_JSON_RE.sub("", cleaned)
+    cleaned = _INTERNAL_LEAKAGE_RE.sub("", cleaned)
 
     # 1. Remove speaker labels (e.g. 'Agent: ', 'AI: ')
     cleaned = _SPEAKER_LABELS_RE.sub("", cleaned)
