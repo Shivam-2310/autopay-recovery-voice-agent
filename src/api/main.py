@@ -265,14 +265,6 @@ async def _execute_single_call(customer_id: str, custom_phone: str | None = None
         )
         if not room_name:
             raise HTTPException(status_code=500, detail="SIP call dispatch failed or was not answered")
-    except SIPDialException as e:
-        logger.warning("SIP dial error for customer %s: %s", customer_id, e)
-        raise HTTPException(status_code=400, detail=str(e))
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("Error executing single call for customer %s: %s", customer_id, e)
-        raise HTTPException(status_code=500, detail=f"Call dispatch error: {e}")
 
         call_id = room_name
         create_call_record(
@@ -299,6 +291,15 @@ async def _execute_single_call(customer_id: str, custom_phone: str | None = None
             "status": "active",
             "target_phone_masked": mask_phone_number(demo_phone),
         }
+
+    except SIPDialException as e:
+        logger.warning("SIP dial error for customer %s: %s", customer_id, e)
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Error executing single call for customer %s: %s", customer_id, e)
+        raise HTTPException(status_code=500, detail=f"Call dispatch error: {e}")
 
     finally:
         await lkapi.aclose()

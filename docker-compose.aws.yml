@@ -3,9 +3,13 @@ services:
   backend:
     ports:
       - "${BACKEND_PORT:-8000}:8000"
+    environment:
+      - PUBLIC_BASE_URL=${PUBLIC_BASE_URL:-http://localhost}
     restart: always
 
   agent:
+    environment:
+      - PUBLIC_BASE_URL=${PUBLIC_BASE_URL:-http://localhost}
     restart: always
 
   frontend:
